@@ -41,7 +41,7 @@ export default function App() {
   const [primaryNav, setPrimaryNav] = useState<PrimaryNavKey>('home');
   const [selectedTrain, setSelectedTrain] = useState<TrainPosition | null>(null);
   const navTranslateY = useSharedValue(0);
-  const { data: trainPositions } = useTrainPositions();
+  const { trains: trainPositions } = useTrainPositions();
 
   const handleSelectTrain = useCallback(
     (train: TrainPosition) => {

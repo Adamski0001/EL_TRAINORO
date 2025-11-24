@@ -1,11 +1,16 @@
 export type TrainPosition = {
   id: string;
   label: string;
-  latitude: number;
-  longitude: number;
-  bearing: number;
-  speedKmh: number;
-  trainOwner: string;
+  advertisedTrainIdent: string | null;
+  operationalTrainNumber: string | null;
+  trainOwner: string | null;
+  coordinate: {
+    latitude: number;
+    longitude: number;
+  };
+  speed: number | null;
+  bearing: number | null;
+  updatedAt: string;
 };
 
 export type TrainStop = {
@@ -23,9 +28,11 @@ export type TrainStop = {
 
 export type TrainDetails = {
   id: string;
-  operator: string;
+  advertisedTrainIdent: string | null;
+  operationalTrainNumber: string | null;
+  operator: string | null;
   productName: string | null;
-  fromName: string;
-  toName: string;
+  fromName: string | null;
+  toName: string | null;
   stops: TrainStop[];
 };

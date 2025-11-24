@@ -1,0 +1,20 @@
+[
+  {
+    "LocationSignature": "Cst",
+    "AdvertisedLocationName": "Stockholm C",
+    "AdvertisedShortLocationName": "Stockholm C",
+    "OfficialLocationName": "Stockholm Central"
+  },
+  {
+    "LocationSignature": "Got",
+    "AdvertisedLocationName": "Göteborg C",
+    "AdvertisedShortLocationName": "Göteborg C",
+    "OfficialLocationName": "Göteborg Central"
+  },
+  {
+    "LocationSignature": "Mal",
+    "AdvertisedLocationName": "Malmö C",
+    "AdvertisedShortLocationName": "Malmö C",
+    "OfficialLocationName": "Malmö Central"
+  }
+]

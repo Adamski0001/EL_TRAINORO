@@ -26,10 +26,13 @@ function TrainMarkersComponent({ trains, selectedTrainId, onSelectTrain }: Train
         return (
           <Marker
             key={train.id}
-            coordinate={{ latitude: train.latitude, longitude: train.longitude }}
+            coordinate={{
+              latitude: train.coordinate.latitude,
+              longitude: train.coordinate.longitude,
+            }}
             flat
             anchor={{ x: 0.5, y: 0.5 }}
-            rotation={normalizeBearing(train.bearing)}
+            rotation={normalizeBearing(train.bearing ?? 0)}
             tracksViewChanges={false}
             onPress={() => onSelectTrain(train)}
           >
