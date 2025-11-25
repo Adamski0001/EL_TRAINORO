@@ -2,8 +2,8 @@ import { BlurView } from 'expo-blur';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  FlatList,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -205,6 +205,88 @@ export function TrafficInfoSheet({
     [handleSnapComplete, startY, translateY],
   );
 
+  const statusMessage = useMemo(() => {
+    if (loading && !events.length) {
+      return 'Läser in trafikhändelser…';
+    }
+    if (lastUpdated) {
+      return `Senast uppdaterad ${formatClockTime(lastUpdated)}`;
+    }
+    return 'Ingen uppdatering ännu';
+  }, [events.length, lastUpdated, loading]);
+
+  const listHeader = useMemo(
+    () => (
+      <View style={styles.listHeader}>
+        <View style={styles.statusRow}>
+          <View>
+            <Text style={styles.statusText}>{statusMessage}</Text>
+            <Text style={styles.statusSubtle}>Automatisk uppdatering var tredje minut</Text>
+          </View>
+          <Pressable onPress={refetch} style={styles.refreshButton} disabled={loading}>
+            <Text style={styles.refreshButtonText}>{loading ? 'Uppdaterar…' : 'Uppdatera'}</Text>
+          </Pressable>
+        </View>
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      </View>
+    ),
+    [error, loading, refetch, statusMessage],
+  );
+
+  const listEmptyComponent = useMemo(
+    () => (
+      <View style={styles.placeholderCard}>
+        {loading ? (
+          <>
+            <ActivityIndicator color="#fff" />
+            <Text style={styles.placeholderText}>Hämtar liveinformation…</Text>
+          </>
+        ) : (
+          <>
+            <Text style={styles.placeholderTitle}>Ingen känd störning</Text>
+            <Text style={styles.placeholderText}>All trafik ser ut att rulla enligt plan just nu.</Text>
+          </>
+        )}
+      </View>
+    ),
+    [loading],
+  );
+
+  const renderEvent = useCallback(
+    ({ item }: { item: TrafficEvent }) => {
+      const severityTheme = severityStyles[item.severity];
+      const updatedLabel = formatRelativeTime(item.updatedAt) ?? formatClockTime(item.updatedAt);
+      const startLabel = formatClockTime(item.startTime);
+      return (
+        <View style={styles.incidentCard}>
+          <View style={styles.incidentHeader}>
+            <View style={styles.titleRow}>
+              <View style={[styles.severityDot, { backgroundColor: severityTheme.dot }]} />
+              <Text style={styles.incidentTitle}>{item.title}</Text>
+            </View>
+            {updatedLabel ? <Text style={styles.incidentTime}>{updatedLabel}</Text> : null}
+          </View>
+          {item.segment ? <Text style={styles.incidentSegment}>{item.segment}</Text> : null}
+          {item.description ? <Text style={styles.incidentDetail}>{item.description}</Text> : null}
+          <View style={styles.metaRow}>
+            <View style={[styles.severityChip, { backgroundColor: severityTheme.chip }]}>
+              <Text style={[styles.severityChipText, { color: severityTheme.text }]}>
+                {item.impactLabel ?? item.severity.toUpperCase()}
+              </Text>
+            </View>
+            <Text style={styles.metaText}>
+              {startLabel ? `Start ${startLabel}` : 'Start okänd'}
+              {item.endTime ? ` · Slut ${formatClockTime(item.endTime)}` : ''}
+            </Text>
+          </View>
+        </View>
+      );
+    },
+    [],
+  );
+
+  const keyExtractor = useCallback((item: TrafficEvent) => item.id, []);
+
   return (
     <Animated.View
       pointerEvents="box-none"
@@ -228,70 +310,21 @@ export function TrafficInfoSheet({
           </View>
         </GestureDetector>
 
-        <ScrollView
-          style={styles.list}
+        <FlatList
+          data={events}
+          keyExtractor={keyExtractor}
+          renderItem={renderEvent}
           contentContainerStyle={styles.listContent}
+          ListHeaderComponent={listHeader}
+          ListEmptyComponent={listEmptyComponent}
+          ItemSeparatorComponent={() => <View style={styles.itemSeparator} />}
           showsVerticalScrollIndicator={false}
-          scrollEnabled={currentSnap === 'full'}
-        >
-          <View style={styles.statusRow}>
-            <View>
-              <Text style={styles.statusText}>
-                {loading && !events.length
-                  ? 'Läser in trafikhändelser…'
-                  : lastUpdated
-                    ? `Senast uppdaterad ${formatClockTime(lastUpdated)}`
-                    : 'Ingen uppdatering ännu'}
-              </Text>
-              <Text style={styles.statusSubtle}>Automatisk uppdatering var tredje minut</Text>
-            </View>
-            <Pressable onPress={refetch} style={styles.refreshButton} disabled={loading}>
-              <Text style={styles.refreshButtonText}>{loading ? 'Uppdaterar…' : 'Uppdatera'}</Text>
-            </Pressable>
-          </View>
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
-          {loading && !events.length ? (
-            <View style={styles.placeholderCard}>
-              <ActivityIndicator color="#fff" />
-              <Text style={styles.placeholderText}>Hämtar liveinformation…</Text>
-            </View>
-          ) : null}
-          {!loading && !events.length ? (
-            <View style={styles.placeholderCard}>
-              <Text style={styles.placeholderTitle}>Ingen känd störning</Text>
-              <Text style={styles.placeholderText}>All trafik ser ut att rulla enligt plan just nu.</Text>
-            </View>
-          ) : null}
-          {events.map(event => {
-            const severityTheme = severityStyles[event.severity];
-            const updatedLabel = formatRelativeTime(event.updatedAt) ?? formatClockTime(event.updatedAt);
-            const startLabel = formatClockTime(event.startTime);
-            return (
-              <View key={event.id} style={styles.incidentCard}>
-                <View style={styles.incidentHeader}>
-                  <View style={styles.titleRow}>
-                    <View style={[styles.severityDot, { backgroundColor: severityTheme.dot }]} />
-                    <Text style={styles.incidentTitle}>{event.title}</Text>
-                  </View>
-                  {updatedLabel ? <Text style={styles.incidentTime}>{updatedLabel}</Text> : null}
-                </View>
-                {event.segment ? <Text style={styles.incidentSegment}>{event.segment}</Text> : null}
-                {event.description ? <Text style={styles.incidentDetail}>{event.description}</Text> : null}
-                <View style={styles.metaRow}>
-                  <View style={[styles.severityChip, { backgroundColor: severityTheme.chip }]}> 
-                    <Text style={[styles.severityChipText, { color: severityTheme.text }]}>
-                      {event.impactLabel ?? event.severity.toUpperCase()}
-                    </Text>
-                  </View>
-                  <Text style={styles.metaText}>
-                    {startLabel ? `Start ${startLabel}` : 'Start okänd'}
-                    {event.endTime ? ` · Slut ${formatClockTime(event.endTime)}` : ''}
-                  </Text>
-                </View>
-              </View>
-            );
-          })}
-        </ScrollView>
+          removeClippedSubviews
+          windowSize={5}
+          initialNumToRender={4}
+          maxToRenderPerBatch={6}
+          keyboardShouldPersistTaps="handled"
+        />
       </BlurView>
     </Animated.View>
   );
@@ -351,8 +384,14 @@ const styles = StyleSheet.create({
   },
   listContent: {
     padding: 20,
-    gap: 12,
     paddingBottom: 80,
+  },
+  listHeader: {
+    gap: 6,
+    marginBottom: 12,
+  },
+  itemSeparator: {
+    height: 12,
   },
   statusRow: {
     flexDirection: 'row',
