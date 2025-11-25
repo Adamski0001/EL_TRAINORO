@@ -1,7 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import MapView, { UrlTile } from 'react-native-maps';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import Animated, {
@@ -12,16 +11,19 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { BottomNav, NavKey } from './components/BottomNav';
+import { TrainMapContainer } from './components/map/TrainMapContainer';
 import { SearchPanel } from './components/SearchPanel';
-import { TrainMarkers } from './components/trains/TrainMarkers';
-import { TrainPanel } from './components/trains/TrainPanel';
+import { TrainPanelContainer } from './components/trains/TrainPanelContainer';
 import {
   TrafficInfoSheet,
   TrafficSheetSnapPoint,
 } from './components/traffic/TrafficInfoSheet';
-import { useTrainPositions } from './hooks/useTrainPositions';
+import { useFrameRateLogger } from './hooks/useFrameRateLogger';
 import type { TrainPosition } from './types/trains';
 type PrimaryNavKey = Exclude<NavKey, 'traffic'>;
+
+const PERF_LOGGING_ENABLED =
+  typeof __DEV__ !== 'undefined' && __DEV__ && process.env.EXPO_PUBLIC_ENABLE_PERF_LOGS === '1';
 
 const SWEDEN_REGION = {
   latitude: 62,
@@ -39,15 +41,15 @@ export default function App() {
   const [trainSheetVisible, setTrainSheetVisible] = useState(false);
   const [trainSnap, setTrainSnap] = useState<TrafficSheetSnapPoint>('hidden');
   const [primaryNav, setPrimaryNav] = useState<PrimaryNavKey>('home');
-  const [selectedTrain, setSelectedTrain] = useState<TrainPosition | null>(null);
+  const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const navTranslateY = useSharedValue(0);
-  const { trains: trainPositions } = useTrainPositions();
+  useFrameRateLogger('root', PERF_LOGGING_ENABLED);
 
   const handleSelectTrain = useCallback(
     (train: TrainPosition) => {
       setTrafficSheetVisible(false);
       setTrainSnap('half');
-      setSelectedTrain(train);
+      setSelectedTrainId(train.id);
       setTrainSheetVisible(true);
     },
     [],
@@ -56,7 +58,7 @@ export default function App() {
   const handleTrainSheetClose = useCallback(() => {
     setTrainSheetVisible(false);
     setTrainSnap('hidden');
-    setSelectedTrain(null);
+    setSelectedTrainId(null);
   }, []);
 
   const handleSelectNav = (key: NavKey) => {
@@ -89,35 +91,21 @@ export default function App() {
       <SafeAreaProvider style={styles.safeArea}>
         <View style={styles.container}>
           <StatusBar style="light" />
-          <MapView
+          <TrainMapContainer
             style={styles.map}
             initialRegion={SWEDEN_REGION}
-            showsCompass
-            toolbarEnabled={false}
-            moveOnMarkerPress={false}
-          >
-            <UrlTile
-              urlTemplate={RAIL_TILE_URL}
-              maximumZ={19}
-              zIndex={2}
-              tileSize={256}
-            />
-            <TrainMarkers
-              trains={trainPositions}
-              selectedTrainId={selectedTrain?.id ?? null}
-              onSelectTrain={handleSelectTrain}
-            />
-          </MapView>
+            tileUrl={RAIL_TILE_URL}
+            selectedTrainId={selectedTrainId}
+            onSelectTrain={handleSelectTrain}
+          />
           <SearchPanel visible={activeNav === 'search'} />
-          {selectedTrain ? (
-            <TrainPanel
-              visible={trainSheetVisible}
-              initialSnap="half"
-              train={selectedTrain}
-              onSnapPointChange={setTrainSnap}
-              onClose={handleTrainSheetClose}
-            />
-          ) : null}
+          <TrainPanelContainer
+            visible={trainSheetVisible}
+            initialSnap="half"
+            trainId={selectedTrainId}
+            onSnapPointChange={setTrainSnap}
+            onClose={handleTrainSheetClose}
+          />
           <Animated.View
             pointerEvents="box-none"
             style={[styles.bottomNavWrapper, navAnimatedStyle]}

@@ -148,13 +148,17 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
   }, [handleSnapComplete, initialSnap, translateY, visible]);
 
   useEffect(() => {
+    if (!visible) {
+      return;
+    }
+    setNow(Date.now());
     const timer = setInterval(() => {
       setNow(Date.now());
     }, 30_000);
     return () => {
       clearInterval(timer);
     };
-  }, []);
+  }, [visible]);
 
   const accent = useMemo(() => {
     const seed = data?.operator ?? data?.productName ?? train.trainOwner ?? train.id;

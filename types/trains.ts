@@ -3,6 +3,9 @@ export type TrainPosition = {
   label: string;
   advertisedTrainIdent: string | null;
   operationalTrainNumber: string | null;
+  operationalTrainDepartureDate: string | null;
+  journeyPlanNumber: string | null;
+  journeyPlanDepartureDate: string | null;
   trainOwner: string | null;
   coordinate: {
     latitude: number;

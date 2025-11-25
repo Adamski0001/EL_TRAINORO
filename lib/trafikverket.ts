@@ -4,16 +4,49 @@ declare const __DEV__: boolean | undefined;
 const IS_DEV = typeof __DEV__ !== 'undefined' ? __DEV__ : process.env.NODE_ENV !== 'production';
 
 const TRAFIKVERKET_ENDPOINT = 'https://api.trafikinfo.trafikverket.se/v2/data.json';
-const TRAIN_POSITION_BODY = `<?xml version="1.0" encoding="UTF-8"?>
+
+const TRAIN_POSITION_INCLUDES = [
+  'Train.OperationalTrainNumber',
+  'Train.OperationalTrainDepartureDate',
+  'Train.JourneyPlanNumber',
+  'Train.JourneyPlanDepartureDate',
+  'Train.AdvertisedTrainNumber',
+  'Position.WGS84',
+  'Position.SWEREF99TM',
+  'TimeStamp',
+  'Status.Active',
+  'Bearing',
+  'Speed',
+  'VersionNumber',
+  'ModifiedTime',
+  'Deleted',
+];
+
+const buildTrainPositionQuery = (options: { modifiedSince?: string | Date | null } = {}) => {
+  const { modifiedSince = null } = options;
+  const filters = [
+    '<EQ name="Deleted" value="false" />',
+    '<EQ name="Status.Active" value="true" />',
+  ];
+
+  if (modifiedSince) {
+    const iso = typeof modifiedSince === 'string' ? modifiedSince : modifiedSince.toISOString();
+    filters.push(`<GT name="ModifiedTime" value="${escapeXml(iso)}" />`);
+  }
+
+  const filterBody = filters.length === 1 ? filters[0] : `<AND>${filters.join('')}</AND>`;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <REQUEST>
   <LOGIN authenticationkey="%API_KEY%" />
   <QUERY objecttype="TrainPosition" schemaversion="1.1" namespace="järnväg.trafikinfo">
     <FILTER>
-      <EQ name="Deleted" value="false" />
-      <EQ name="Status.Active" value="true" />
+      ${filterBody}
     </FILTER>
+    ${TRAIN_POSITION_INCLUDES.map(field => `<INCLUDE>${field}</INCLUDE>`).join('\n    ')}
   </QUERY>
 </REQUEST>`;
+};
 
 type XmlNode = Record<string, unknown>;
 
@@ -489,8 +522,11 @@ export const fetchStationLookup = async (options: { forceRefresh?: boolean } = {
 
 export type TrainPositionApiEntry = {
   operationalTrainNumber: string | null;
+  operationalTrainDepartureDate: string | null;
   advertisedTrainIdent: string | null;
   trainOwner: string | null;
+  journeyPlanNumber: string | null;
+  journeyPlanDepartureDate: string | null;
   bearing: number | null;
   speed: number | null;
   x: number | null;
@@ -546,11 +582,21 @@ const mapTrainPosition = (entry: XmlNode): TrainPositionApiEntry => {
     pickStringValue(trainNode?.TrainNumber) ??
     pickStringValue(entry?.TrainNumber) ??
     null;
+  const operationalTrainDepartureDate =
+    pickStringValue(trainNode?.OperationalTrainDepartureDate) ??
+    pickStringValue(entry?.OperationalTrainDepartureDate) ??
+    null;
   const advertisedTrainIdent =
     pickStringValue(trainNode?.AdvertisedTrainIdent) ??
     pickStringValue(trainNode?.AdvertisedTrainNumber) ??
     pickStringValue(entry?.AdvertisedTrainIdent) ??
     pickStringValue(entry?.AdvertisedTrainNumber) ??
+    null;
+  const journeyPlanNumber =
+    pickStringValue(trainNode?.JourneyPlanNumber) ?? pickStringValue(entry?.JourneyPlanNumber) ?? null;
+  const journeyPlanDepartureDate =
+    pickStringValue(trainNode?.JourneyPlanDepartureDate) ??
+    pickStringValue(entry?.JourneyPlanDepartureDate) ??
     null;
   const trainOwner =
     pickStringValue(entry?.TrainOwner) ?? pickStringValue(trainNode?.TrainOwner) ?? null;
@@ -568,8 +614,11 @@ const mapTrainPosition = (entry: XmlNode): TrainPositionApiEntry => {
 
   return {
     operationalTrainNumber,
+    operationalTrainDepartureDate,
     advertisedTrainIdent,
     trainOwner,
+    journeyPlanNumber,
+    journeyPlanDepartureDate,
     bearing,
     speed,
     x,
@@ -796,8 +845,11 @@ const mapTrainAnnouncement = (entry: XmlNode): TrainAnnouncementApiEntry => {
   };
 };
 
-export async function fetchTrainPositions(options: { signal?: AbortSignal } = {}) {
-  const payload = await sendTrafikverketRequest(TRAIN_POSITION_BODY, options.signal);
+export async function fetchTrainPositions(options: { signal?: AbortSignal; modifiedSince?: string | Date | null } = {}) {
+  const payload = await sendTrafikverketRequest(
+    buildTrainPositionQuery({ modifiedSince: options.modifiedSince ?? null }),
+    options.signal,
+  );
   if (IS_DEV) {
     console.log('[Trafikverket][Diag] TrainPosition raw payload snippet', payload.slice(0, 500));
   }

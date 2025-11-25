@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { InteractionManager } from 'react-native';
 
 import {
   fetchStationLookup,
@@ -45,56 +46,109 @@ const isDepartureActivity = (entry: TrainAnnouncementApiEntry) => {
   return type.includes('avg') || type.includes('dep');
 };
 
-type InternalStop = TrainStop & { order: number };
+type InternalStop = TrainStop & {
+  order: number;
+  hasArrival: boolean;
+  hasDeparture: boolean;
+};
 
 const buildStops = (announcements: TrainAnnouncementApiEntry[], lookup: StationLookup): TrainStop[] => {
-  const stopMap = new Map<string, InternalStop>();
+  const locationBuckets = new Map<string, InternalStop[]>();
+  const stopsInOrder: InternalStop[] = [];
+  let orderCounter = 0;
+
+  const resolveKey = (entry: TrainAnnouncementApiEntry, index: number) => {
+    const signature = entry.locationSignature?.trim();
+    if (signature) {
+      return signature;
+    }
+    const advertisedName = entry.advertisedLocationName?.trim();
+    if (advertisedName) {
+      return advertisedName;
+    }
+    return `unknown-${index}`;
+  };
+
+  const selectArrivalTimestamp = (stop: InternalStop) => {
+    const candidate =
+      stop.arrivalActual ??
+      stop.arrivalEstimated ??
+      stop.arrivalAdvertised ??
+      stop.departureActual ??
+      stop.departureEstimated ??
+      stop.departureAdvertised;
+    return candidate ? candidate.getTime() : Number.MAX_SAFE_INTEGER;
+  };
 
   announcements.forEach((entry, index) => {
-    const key = entry.locationSignature ?? `${entry.advertisedLocationName ?? 'unknown'}-${index}`;
-    const stationName = resolveStationName(entry.locationSignature, entry.advertisedLocationName, lookup);
+    const key = resolveKey(entry, index);
     const advertised = parseDate(entry.advertisedTimeAtLocation);
     const estimated = parseDate(entry.estimatedTimeAtLocation);
     const actual = parseDate(entry.timeAtLocation);
     const arrivalActivity = isArrivalActivity(entry);
     const departureActivity = isDepartureActivity(entry);
+    const bucket = locationBuckets.get(key) ?? [];
+    let stop = bucket[bucket.length - 1];
 
-    const existing = stopMap.get(key);
-    const stop: InternalStop = existing ?? {
-      id: `${key}-${index}`,
-      stationName,
-      track: entry.trackAtLocation ?? null,
-      arrivalAdvertised: null,
-      arrivalEstimated: null,
-      arrivalActual: null,
-      departureAdvertised: null,
-      departureEstimated: null,
-      departureActual: null,
-      canceled: entry.canceled,
-      order: index,
-    };
+    const shouldReuse =
+      stop &&
+      ((arrivalActivity && !stop.hasArrival) ||
+        (departureActivity && !stop.hasDeparture) ||
+        (!arrivalActivity && !departureActivity));
+
+    if (!shouldReuse || !stop) {
+      const stationName = resolveStationName(entry.locationSignature, entry.advertisedLocationName, lookup);
+      stop = {
+        id: `${key}-${bucket.length}`,
+        stationName,
+        track: entry.trackAtLocation ?? null,
+        arrivalAdvertised: null,
+        arrivalEstimated: null,
+        arrivalActual: null,
+        departureAdvertised: null,
+        departureEstimated: null,
+        departureActual: null,
+        canceled: entry.canceled,
+        order: orderCounter++,
+        hasArrival: false,
+        hasDeparture: false,
+      };
+      bucket.push(stop);
+      stopsInOrder.push(stop);
+      locationBuckets.set(key, bucket);
+    }
 
     stop.track = stop.track ?? entry.trackAtLocation ?? null;
     stop.canceled = stop.canceled || entry.canceled;
 
-    if (arrivalActivity || !existing) {
+    const shouldApplyArrival = arrivalActivity || (!stop.hasArrival && !departureActivity);
+    const shouldApplyDeparture = departureActivity || (!stop.hasDeparture && !arrivalActivity);
+
+    if (shouldApplyArrival) {
       stop.arrivalAdvertised = advertised ?? stop.arrivalAdvertised;
       stop.arrivalEstimated = estimated ?? stop.arrivalEstimated;
       stop.arrivalActual = actual ?? stop.arrivalActual;
+      stop.hasArrival = stop.hasArrival || arrivalActivity;
     }
 
-    if (departureActivity || !existing) {
+    if (shouldApplyDeparture) {
       stop.departureAdvertised = advertised ?? stop.departureAdvertised;
       stop.departureEstimated = estimated ?? stop.departureEstimated;
       stop.departureActual = actual ?? stop.departureActual;
+      stop.hasDeparture = stop.hasDeparture || departureActivity;
     }
-
-    stopMap.set(key, stop);
   });
 
-  return Array.from(stopMap.values())
-    .sort((a, b) => a.order - b.order)
-    .map(({ order, ...rest }) => rest);
+  return stopsInOrder
+    .sort((a, b) => {
+      const aKey = selectArrivalTimestamp(a);
+      const bKey = selectArrivalTimestamp(b);
+      if (aKey !== bKey) {
+        return aKey - bKey;
+      }
+      return a.order - b.order;
+    })
+    .map(({ order, hasArrival, hasDeparture, ...rest }) => rest);
 };
 
 const resolveEndpointName = (
@@ -123,8 +177,9 @@ export function useTrainDetails(train: TrainPosition | null): UseTrainDetailsRes
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const loadTaskRef = useRef<ReturnType<typeof InteractionManager.runAfterInteractions> | null>(null);
 
-  const load = useCallback(async () => {
+  const performLoad = useCallback(async () => {
     if (!train) {
       setData(undefined);
       setError(null);
@@ -142,17 +197,21 @@ export function useTrainDetails(train: TrainPosition | null): UseTrainDetailsRes
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
-    setLoading(true);
     setError(null);
 
     try {
+      const targetDate =
+        train.operationalTrainDepartureDate ?? train.journeyPlanDepartureDate ?? train.updatedAt ?? null;
+      const windowMinutes = targetDate ? undefined : 1_440;
+
       const [lookup, announcements] = await Promise.all([
         fetchStationLookup(),
         fetchTrainAnnouncements({
           advertisedTrainIdent: train.advertisedTrainIdent,
           operationalTrainNumber: train.operationalTrainNumber,
-          windowMinutes: 1_440,
+          windowMinutes,
           signal: controller.signal,
+          targetDate,
         }),
       ]);
 
@@ -192,15 +251,33 @@ export function useTrainDetails(train: TrainPosition | null): UseTrainDetailsRes
     }
   }, [train]);
 
+  const load = useCallback(
+    (options: { immediate?: boolean } = {}) => {
+      const { immediate = false } = options;
+      loadTaskRef.current?.cancel?.();
+      setLoading(true);
+      if (immediate) {
+        void performLoad();
+        return;
+      }
+      loadTaskRef.current = InteractionManager.runAfterInteractions(() => {
+        loadTaskRef.current = null;
+        void performLoad();
+      });
+    },
+    [performLoad],
+  );
+
   useEffect(() => {
     load();
     return () => {
+      loadTaskRef.current?.cancel?.();
       abortRef.current?.abort();
     };
   }, [load]);
 
   const refetch = useCallback(() => {
-    load();
+    load({ immediate: true });
   }, [load]);
 
   return { data, loading, error, refetch };

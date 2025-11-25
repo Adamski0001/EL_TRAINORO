@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useCallback } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
 import { Marker } from 'react-native-maps';
 
@@ -11,41 +11,64 @@ type TrainMarkersProps = {
 };
 
 const TRAIN_ICON = require('../../assets/train-icon.png');
+const TRAIN_ICON_HEADING_OFFSET = 180;
 
-const normalizeBearing = (bearing: number) => {
+const normalizeBearing = (bearing?: number | null) => {
+  if (bearing === null || typeof bearing === 'undefined' || Number.isNaN(bearing)) {
+    return 0;
+  }
   const normalized = ((bearing % 360) + 360) % 360;
-  // Icon nose points south by default, so rotate 180° to align with heading.
-  return (normalized + 180) % 360;
+  return (normalized + TRAIN_ICON_HEADING_OFFSET) % 360;
 };
 
-function TrainMarkersComponent({ trains, selectedTrainId, onSelectTrain }: TrainMarkersProps) {
-  const markerElements = useMemo(
-    () =>
-      trains.map(train => {
-        const selected = train.id === selectedTrainId;
-        return (
-          <Marker
-            key={train.id}
-            coordinate={{
-              latitude: train.coordinate.latitude,
-              longitude: train.coordinate.longitude,
-            }}
-            flat
-            anchor={{ x: 0.5, y: 0.5 }}
-            rotation={normalizeBearing(train.bearing ?? 0)}
-            tracksViewChanges={false}
-            onPress={() => onSelectTrain(train)}
-          >
-            <View style={[styles.markerWrapper, selected && styles.markerWrapperSelected]}>
-              <Image source={TRAIN_ICON} style={[styles.icon, selected && styles.iconSelected]} />
-            </View>
-          </Marker>
-        );
-      }),
-    [onSelectTrain, selectedTrainId, trains],
-  );
+type TrainMarkerProps = {
+  train: TrainPosition;
+  selected: boolean;
+  onSelectTrain: (train: TrainPosition) => void;
+};
 
-  return <>{markerElements}</>;
+const TrainMarker = memo(
+  ({ train, selected, onSelectTrain }: TrainMarkerProps) => {
+    const heading = normalizeBearing(train.bearing);
+    const handlePress = useCallback(() => {
+      onSelectTrain(train);
+    }, [onSelectTrain, train]);
+
+    return (
+      <Marker
+        coordinate={{
+          latitude: train.coordinate.latitude,
+          longitude: train.coordinate.longitude,
+        }}
+        anchor={{ x: 0.5, y: 0.5 }}
+        tracksViewChanges={false}
+        onPress={handlePress}
+      >
+        <View style={[styles.markerWrapper, selected && styles.markerWrapperSelected]}>
+          <View style={[styles.rotationWrapper, { transform: [{ rotate: `${heading}deg` }] }]}>
+            <Image source={TRAIN_ICON} style={[styles.icon, selected && styles.iconSelected]} />
+          </View>
+        </View>
+      </Marker>
+    );
+  },
+  (prev, next) =>
+    prev.train === next.train && prev.selected === next.selected && prev.onSelectTrain === next.onSelectTrain,
+);
+
+function TrainMarkersComponent({ trains, selectedTrainId, onSelectTrain }: TrainMarkersProps) {
+  return (
+    <>
+      {trains.map(train => (
+        <TrainMarker
+          key={train.id}
+          train={train}
+          selected={train.id === selectedTrainId}
+          onSelectTrain={onSelectTrain}
+        />
+      ))}
+    </>
+  );
 }
 
 export const TrainMarkers = memo(TrainMarkersComponent);
@@ -63,6 +86,12 @@ const styles = StyleSheet.create({
   markerWrapperSelected: {
     shadowOpacity: 0.4,
     shadowRadius: 10,
+  },
+  rotationWrapper: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   icon: {
     width: 34,

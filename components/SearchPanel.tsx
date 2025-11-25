@@ -1,16 +1,15 @@
 import { BlurView } from 'expo-blur';
 import { Search as SearchIcon, TrainFront, Map as RouteIcon } from 'lucide-react-native';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Animated,
-  Dimensions,
-  Easing,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Dimensions, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Animated, {
+  Easing,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
@@ -61,29 +60,29 @@ type SearchPanelProps = {
 export function SearchPanel({ visible }: SearchPanelProps) {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
-  const translateX = useRef(new Animated.Value(SCREEN_WIDTH)).current;
-  const opacity = useRef(new Animated.Value(0)).current;
+  const translateX = useSharedValue(SCREEN_WIDTH);
+  const opacity = useSharedValue(0);
 
   useEffect(() => {
-    Animated.parallel([
-      Animated.timing(translateX, {
-        toValue: visible ? 0 : SCREEN_WIDTH,
-        duration: 260,
-        easing: visible ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.timing(opacity, {
-        toValue: visible ? 1 : 0,
-        duration: 220,
-        easing: visible ? Easing.out(Easing.quad) : Easing.in(Easing.quad),
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      if (!visible) {
-        setQuery('');
+    const shouldReset = !visible;
+    translateX.value = withTiming(visible ? 0 : SCREEN_WIDTH, {
+      duration: 260,
+      easing: visible ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
+    }, finished => {
+      if (finished && shouldReset) {
+        runOnJS(setQuery)('');
       }
     });
+    opacity.value = withTiming(visible ? 1 : 0, {
+      duration: 220,
+      easing: visible ? Easing.out(Easing.quad) : Easing.in(Easing.quad),
+    });
   }, [opacity, translateX, visible]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+    opacity: opacity.value,
+  }));
 
   const suggestions = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -107,11 +106,8 @@ export function SearchPanel({ visible }: SearchPanelProps) {
       pointerEvents={visible ? 'auto' : 'none'}
       style={[
         styles.root,
-        {
-          paddingTop: insets.top + 12,
-          transform: [{ translateX }],
-          opacity,
-        },
+        { paddingTop: insets.top + 12 },
+        animatedStyle,
       ]}
     >
       <View style={styles.searchWrapper}>
