@@ -29,7 +29,7 @@ const resolveStationName = (signature: string | null, fallback: string | null, l
     return fallback.trim();
   }
   if (signature?.trim()) {
-    return lookup[signature.trim()] ?? signature.trim();
+    return lookup[signature.trim()]?.name ?? signature.trim();
   }
   return 'Okänd plats';
 };
@@ -166,7 +166,7 @@ const resolveEndpointName = (
     const ref = takeLast ? refs[refs.length - 1] : refs[0];
     const signature = ref.name?.trim();
     if (signature) {
-      return lookup[signature] ?? signature;
+      return lookup[signature]?.name ?? signature;
     }
   }
   return null;

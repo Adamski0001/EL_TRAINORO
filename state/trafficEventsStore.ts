@@ -1,5 +1,12 @@
-import { fetchOperativeEvents, fetchRailwayEvents, fetchStationLookup } from '../lib/trafikverket';
-import type { EventSectionApiEntry, OperativeEventApiEntry, RailwayEventApiEntry, SelectedSectionApiEntry } from '../lib/trafikverket';
+import { fetchOperativeEvents, fetchRailwayEvents, fetchReasonCodeLookup, fetchStationLookup } from '../lib/trafikverket';
+import type {
+  EventSectionApiEntry,
+  OperativeEventApiEntry,
+  RailwayEventApiEntry,
+  ReasonCodeLookup,
+  SelectedSectionApiEntry,
+  StationLookup,
+} from '../lib/trafikverket';
 import type { TrafficEvent, TrafficEventSeverity } from '../types/traffic';
 
 const REFRESH_INTERVAL_MS = 150_000;
@@ -82,15 +89,32 @@ const impactLabelFromScore = (score: number | null): string | null => {
   return 'Liten påverkan';
 };
 
-const resolveStationName = (signature: string | null, lookup: Record<string, string>): string | null => {
+const normalizeSignature = (signature: string | null | undefined): string | null => {
   if (!signature) {
     return null;
   }
   const trimmed = signature.trim();
-  if (!trimmed) {
+  return trimmed ? trimmed : null;
+};
+
+const resolveStationName = (signature: string | null, lookup: StationLookup): string | null => {
+  const normalized = normalizeSignature(signature);
+  if (!normalized) {
     return null;
   }
-  return lookup[trimmed] ?? trimmed;
+  return lookup[normalized]?.name ?? normalized;
+};
+
+const resolveReasonDescription = (code: string | null, lookup: ReasonCodeLookup): string | null => {
+  if (!code) {
+    return null;
+  }
+  const normalized = code.trim();
+  if (!normalized) {
+    return null;
+  }
+  const entry = lookup[normalized];
+  return entry?.label ?? null;
 };
 
 const buildSegmentLabel = (sections: Array<{ from: string | null; to: string | null; via?: string | null }>) => {
@@ -108,6 +132,20 @@ const buildSegmentLabel = (sections: Array<{ from: string | null; to: string | n
   return null;
 };
 
+const mapStationLocations = (stationCodes: Set<string>, lookup: StationLookup): TrafficEvent['stations'] => {
+  const stations: TrafficEvent['stations'] = [];
+  stationCodes.forEach(code => {
+    const entry = lookup[code];
+    stations.push({
+      signature: code,
+      name: entry?.name ?? code,
+      latitude: entry?.latitude ?? null,
+      longitude: entry?.longitude ?? null,
+    });
+  });
+  return stations;
+};
+
 type DraftEvent = {
   id: string;
   title: string | null;
@@ -119,6 +157,7 @@ type DraftEvent = {
   impactLabel: string | null;
   sections: Array<{ fromSignature: string | null; toSignature: string | null; viaSignature: string | null }>; 
   source: 'operative' | 'railway' | 'merged';
+  stationCodes: Set<string>;
 };
 
 const upsertDraft = (drafts: Map<string, DraftEvent>, id: string, source: DraftEvent['source']) => {
@@ -134,6 +173,7 @@ const upsertDraft = (drafts: Map<string, DraftEvent>, id: string, source: DraftE
       impactLabel: null,
       sections: [],
       source,
+      stationCodes: new Set<string>(),
     });
   }
   const draft = drafts.get(id)!;
@@ -143,20 +183,40 @@ const upsertDraft = (drafts: Map<string, DraftEvent>, id: string, source: DraftE
   return draft;
 };
 
+const addStationSignature = (draft: DraftEvent, signature: string | null | undefined) => {
+  const normalized = normalizeSignature(signature);
+  if (!normalized) {
+    return;
+  }
+  draft.stationCodes.add(normalized);
+};
+
 const appendSections = (draft: DraftEvent, sections: SelectedSectionApiEntry[] | EventSectionApiEntry[]) => {
   sections.forEach(section => {
+    const fromSignature = section.fromSignature ?? null;
+    const toSignature = section.toSignature ?? null;
+    const viaSignature = section.viaSignature ?? null;
     draft.sections.push({
-      fromSignature: section.fromSignature ?? null,
-      toSignature: section.toSignature ?? null,
-      viaSignature: section.viaSignature ?? null,
+      fromSignature,
+      toSignature,
+      viaSignature,
     });
+    addStationSignature(draft, fromSignature);
+    addStationSignature(draft, toSignature);
+    addStationSignature(draft, viaSignature);
+    if ('intermediateSignatures' in section && Array.isArray(section.intermediateSignatures)) {
+      section.intermediateSignatures.forEach(signature => {
+        addStationSignature(draft, signature);
+      });
+    }
   });
 };
 
 const normalizeEvents = (
   operativeEvents: OperativeEventApiEntry[],
   railwayEvents: RailwayEventApiEntry[],
-  lookup: Record<string, string>,
+  lookup: StationLookup,
+  reasonLookup: ReasonCodeLookup,
 ): TrafficEvent[] => {
   const drafts = new Map<string, DraftEvent>();
 
@@ -210,7 +270,12 @@ const normalizeEvents = (
     draft.startTime = draft.startTime ?? event.startDateTime;
     draft.endTime = draft.endTime ?? event.endDateTime;
     draft.updatedAt = draft.updatedAt ?? event.modifiedDateTime ?? event.startDateTime;
-    draft.title = draft.title ?? event.reasonCode ?? 'Trafikhändelse';
+    const reasonLabel =
+      event.reasonDescription ?? resolveReasonDescription(event.reasonCode, reasonLookup) ?? event.reasonCode;
+    draft.title = draft.title ?? reasonLabel ?? 'Trafikhändelse';
+    if (!draft.description && reasonLabel) {
+      draft.description = reasonLabel;
+    }
     appendSections(draft, event.sections);
   });
 
@@ -224,6 +289,7 @@ const normalizeEvents = (
     const segment = buildSegmentLabel(sectionNames);
     const severity = severityFromScore(draft.severityScore || 1);
     const title = draft.title ?? segment ?? 'Trafikhändelse';
+     const stations = mapStationLocations(draft.stationCodes, lookup);
     events.push({
       id: draft.id,
       title,
@@ -235,6 +301,7 @@ const normalizeEvents = (
       endTime: draft.endTime,
       updatedAt: draft.updatedAt,
       source: draft.source,
+      stations,
     });
   });
 
@@ -278,12 +345,13 @@ async function loadEvents(options: { immediate?: boolean } = {}) {
     assignState({ loading: true });
   }
   try {
-    const [lookup, operativeEvents, railwayEvents] = await Promise.all([
+    const [lookup, reasonLookup, operativeEvents, railwayEvents] = await Promise.all([
       fetchStationLookup(),
+      fetchReasonCodeLookup(),
       fetchOperativeEvents({ signal: controller.signal }),
       fetchRailwayEvents({ signal: controller.signal }),
     ]);
-    const events = normalizeEvents(operativeEvents, railwayEvents, lookup);
+    const events = normalizeEvents(operativeEvents, railwayEvents, lookup, reasonLookup);
     assignState({
       events,
       loading: false,

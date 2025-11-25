@@ -33,7 +33,7 @@ const resolveLocationName = (code: string | null, lookup: StationLookup | null) 
   if (!lookup) {
     return normalized;
   }
-  return lookup[normalized] ?? normalized;
+  return lookup[normalized]?.name ?? normalized;
 };
 
 const buildRouteLabel = (route: RouteInfo | undefined, lookup: StationLookup | null) => {

@@ -151,9 +151,29 @@ type TrainStationMetadata = {
   AdvertisedLocationName?: string;
   AdvertisedShortLocationName?: string;
   OfficialLocationName?: string;
+  Latitude?: number | null;
+  Longitude?: number | null;
 };
 
-export type StationLookup = Record<string, string>;
+export type StationLookupEntry = {
+  name: string;
+  latitude: number | null;
+  longitude: number | null;
+};
+
+export type StationLookup = Record<string, StationLookupEntry>;
+
+export type ReasonCodeLookupEntry = {
+  code: string;
+  groupDescription: string | null;
+  level1Description: string | null;
+  level2Description: string | null;
+  level3Description: string | null;
+  level4Description: string | null;
+  label: string | null;
+};
+
+export type ReasonCodeLookup = Record<string, ReasonCodeLookupEntry>;
 
 const buildStationLookup = (entries: TrainStationMetadata[]): StationLookup =>
   entries.reduce<StationLookup>((acc, entry) => {
@@ -166,9 +186,49 @@ const buildStationLookup = (entries: TrainStationMetadata[]): StationLookup =>
       (entry.OfficialLocationName ?? '').trim() ||
       (entry.AdvertisedShortLocationName ?? '').trim() ||
       signature;
-    acc[signature] = preferredName;
+    const latitude = typeof entry.Latitude === 'number' ? entry.Latitude : null;
+    const longitude = typeof entry.Longitude === 'number' ? entry.Longitude : null;
+    acc[signature] = {
+      name: preferredName,
+      latitude,
+      longitude,
+    };
     return acc;
   }, {});
+
+const buildReasonCodeLookup = (records: XmlNode[]): ReasonCodeLookup => {
+  return records.reduce<ReasonCodeLookup>((acc, record) => {
+    const code = pickStringValue(record?.Code);
+    if (!code) {
+      return acc;
+    }
+    const level1 = pickStringValue(record?.Level1Description);
+    const level2 = pickStringValue(record?.Level2Description);
+    const level3 = pickStringValue(record?.Level3Description);
+    const level4 = pickStringValue(record?.Level4Description);
+    const groupDescription = pickStringValue(record?.GroupDescription);
+    const label =
+      level4 && level4.trim()
+        ? level4.trim()
+        : level3 && level3.trim()
+          ? level3.trim()
+          : level2 && level2.trim()
+            ? level2.trim()
+            : level1 && level1.trim()
+              ? level1.trim()
+              : groupDescription?.trim() ?? null;
+    acc[code] = {
+      code,
+      groupDescription: groupDescription ?? null,
+      level1Description: level1 ?? null,
+      level2Description: level2 ?? null,
+      level3Description: level3 ?? null,
+      level4Description: level4 ?? null,
+      label,
+    };
+    return acc;
+  }, {});
+};
 
 const TRAIN_STATION_BODY = `<?xml version="1.0" encoding="UTF-8"?>
 <REQUEST>
@@ -181,6 +241,8 @@ const TRAIN_STATION_BODY = `<?xml version="1.0" encoding="UTF-8"?>
     <INCLUDE>AdvertisedLocationName</INCLUDE>
     <INCLUDE>AdvertisedShortLocationName</INCLUDE>
     <INCLUDE>OfficialLocationName</INCLUDE>
+    <INCLUDE>Geometry.WGS84</INCLUDE>
+    <INCLUDE>Geometry.SWEREF99TM</INCLUDE>
   </QUERY>
 </REQUEST>`;
 
@@ -188,6 +250,19 @@ const fallbackStationLookup = buildStationLookup((stationFallback as TrainStatio
 
 let stationLookupCache: StationLookup | null = null;
 let stationLookupPromise: Promise<StationLookup> | null = null;
+
+const REASON_CODE_BODY = `<?xml version="1.0" encoding="UTF-8"?>
+<REQUEST>
+  <LOGIN authenticationkey="%API_KEY%" />
+  <QUERY objecttype="ReasonCode" schemaversion="1.0">
+    <FILTER>
+      <EQ name="Deleted" value="false" />
+    </FILTER>
+  </QUERY>
+</REQUEST>`;
+
+let reasonCodeLookupCache: ReasonCodeLookup | null = null;
+let reasonCodeLookupPromise: Promise<ReasonCodeLookup> | null = null;
 
 const ensureArray = <T,>(value: T | T[] | undefined | null): T[] => {
   if (!value) {
@@ -586,6 +661,8 @@ const fetchTrainStationsFromApi = async () => {
     AdvertisedLocationName: (entry?.AdvertisedLocationName as string) ?? undefined,
     AdvertisedShortLocationName: (entry?.AdvertisedShortLocationName as string) ?? undefined,
     OfficialLocationName: (entry?.OfficialLocationName as string) ?? undefined,
+    Latitude: resolveCoordinates(entry)?.latitude ?? null,
+    Longitude: resolveCoordinates(entry)?.longitude ?? null,
   }));
 };
 
@@ -620,6 +697,38 @@ export const fetchStationLookup = async (options: { forceRefresh?: boolean } = {
   const request = loadStations();
   if (!forceRefresh) {
     stationLookupPromise = request;
+  }
+  return request;
+};
+
+export const fetchReasonCodeLookup = async (options: { forceRefresh?: boolean } = {}) => {
+  const { forceRefresh = false } = options;
+  if (!forceRefresh && reasonCodeLookupCache) {
+    return reasonCodeLookupCache;
+  }
+  if (!forceRefresh && reasonCodeLookupPromise) {
+    return reasonCodeLookupPromise;
+  }
+
+  const loadReasonCodes = async () => {
+    try {
+      const xml = await sendTrafikverketRequest(REASON_CODE_BODY);
+      const records = parseApiResponse(xml, 'ReasonCode');
+      const lookup = buildReasonCodeLookup(records);
+      reasonCodeLookupCache = lookup;
+      return lookup;
+    } catch (error) {
+      console.warn('[ReasonCodes] Kunde inte hämta orsakskoder.', error);
+      reasonCodeLookupCache = {};
+      return {};
+    } finally {
+      reasonCodeLookupPromise = null;
+    }
+  };
+
+  const request = loadReasonCodes();
+  if (!forceRefresh) {
+    reasonCodeLookupPromise = request;
   }
   return request;
 };
@@ -1052,6 +1161,7 @@ export type RailwayEventApiEntry = {
   startDateTime: string | null;
   endDateTime: string | null;
   reasonCode: string | null;
+  reasonDescription: string | null;
   eventStatus: string | null;
   modifiedDateTime: string | null;
   sections: SelectedSectionApiEntry[];
@@ -1158,12 +1268,19 @@ const mapOperativeEvent = (entry: XmlNode): OperativeEventApiEntry => {
 };
 
 const mapRailwayEvent = (entry: XmlNode): RailwayEventApiEntry => {
+  const reasonNode = pickRecordNode(entry?.ReasonCode);
+  const reasonCode =
+    pickStringValue(reasonNode?.ReasonCodeId) ??
+    pickStringValue(reasonNode?.Code) ??
+    pickStringValue(entry?.ReasonCode) ??
+    null;
   return {
     eventId: pickStringValue(entry?.EventId) ?? null,
     operativeEventId: pickStringValue(entry?.OperativeEventId) ?? null,
     startDateTime: pickStringValue(entry?.StartDateTime) ?? null,
     endDateTime: pickStringValue(entry?.EndDateTime) ?? null,
-    reasonCode: pickStringValue(entry?.ReasonCode) ?? null,
+    reasonCode,
+    reasonDescription: pickStringValue(reasonNode?.Description) ?? null,
     eventStatus: pickStringValue(entry?.EventStatus) ?? null,
     modifiedDateTime: pickStringValue(entry?.ModifiedDateTime) ?? null,
     sections: mapSelectedSections(entry?.SelectedSection),

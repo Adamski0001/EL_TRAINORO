@@ -20,6 +20,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { useTrafficEvents } from '../../hooks/useTrafficEvents';
+import { useUserLocation } from '../../hooks/useUserLocation';
 import type { TrafficEvent } from '../../types/traffic';
 import type { TrafficSheetSnapPoint } from './sheetSnapPoints';
 import {
@@ -63,6 +64,56 @@ const severityStyles: Record<TrafficEvent['severity'], { dot: string; chip: stri
     chip: 'rgba(248, 113, 113, 0.18)',
     text: '#fecaca',
   },
+};
+
+type Coordinates = {
+  latitude: number;
+  longitude: number;
+};
+
+const EARTH_RADIUS_KM = 6_371;
+
+const toRadians = (value: number) => (value * Math.PI) / 180;
+
+const haversineDistance = (a: Coordinates, b: Coordinates) => {
+  const dLat = toRadians(b.latitude - a.latitude);
+  const dLon = toRadians(b.longitude - a.longitude);
+  const lat1 = toRadians(a.latitude);
+  const lat2 = toRadians(b.latitude);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLon = Math.sin(dLon / 2);
+  const haversine = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon;
+  return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(haversine));
+};
+
+const computeEventDistance = (event: TrafficEvent, coords: Coordinates): number | null => {
+  let best: number | null = null;
+  event.stations.forEach(station => {
+    if (typeof station.latitude !== 'number' || typeof station.longitude !== 'number') {
+      return;
+    }
+    const candidate = haversineDistance(
+      { latitude: station.latitude, longitude: station.longitude },
+      coords,
+    );
+    if (best === null || candidate < best) {
+      best = candidate;
+    }
+  });
+  return best;
+};
+
+const formatDistanceLabel = (kilometers: number): string => {
+  if (kilometers >= 1) {
+    const digits = kilometers >= 10 ? 0 : 1;
+    const formatter = new Intl.NumberFormat('sv-SE', {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+    return `${formatter.format(kilometers)} km bort`;
+  }
+  const meters = Math.max(1, Math.round(kilometers * 1_000));
+  return `${meters} m bort`;
 };
 
 const formatClockTime = (value: string | Date | null) => {
@@ -111,6 +162,15 @@ export function TrafficInfoSheet({
   const onCloseRef = useRef(onClose);
   const onSnapPointChangeRef = useRef(onSnapPointChange);
   const { events, loading, error, lastUpdated, refetch } = useTrafficEvents();
+  const locationPromptedRef = useRef(false);
+  const {
+    coords: userCoords,
+    permissionStatus: locationPermission,
+    canAskAgain: canRequestLocation,
+    requestPermission: requestLocationPermission,
+    loading: requestingLocation,
+    error: locationError,
+  } = useUserLocation({ active: visible });
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -119,6 +179,16 @@ export function TrafficInfoSheet({
   useEffect(() => {
     onSnapPointChangeRef.current = onSnapPointChange;
   }, [onSnapPointChange]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+    if (locationPermission === 'undetermined' && !locationPromptedRef.current) {
+      locationPromptedRef.current = true;
+      void requestLocationPermission();
+    }
+  }, [locationPermission, requestLocationPermission, visible]);
 
   const handleSnapComplete = useCallback(
     (snap: TrafficSheetSnapPoint) => {
@@ -215,6 +285,71 @@ export function TrafficInfoSheet({
     return 'Ingen uppdatering ännu';
   }, [events.length, lastUpdated, loading]);
 
+  const { sortedEvents, distanceMap } = useMemo(() => {
+    if (!userCoords) {
+      return {
+        sortedEvents: events,
+        distanceMap: new Map<string, number | null>(),
+      };
+    }
+    const enriched = events.map((event, index) => ({
+      event,
+      index,
+      distance: computeEventDistance(event, userCoords),
+    }));
+    enriched.sort((a, b) => {
+      const aDistance = typeof a.distance === 'number' ? a.distance : null;
+      const bDistance = typeof b.distance === 'number' ? b.distance : null;
+      if (aDistance !== null && bDistance !== null) {
+        if (aDistance !== bDistance) {
+          return aDistance - bDistance;
+        }
+        return a.index - b.index;
+      }
+      if (aDistance !== null) {
+        return -1;
+      }
+      if (bDistance !== null) {
+        return 1;
+      }
+      return a.index - b.index;
+    });
+    const map = new Map<string, number | null>();
+    enriched.forEach(item => {
+      map.set(item.event.id, typeof item.distance === 'number' ? item.distance : null);
+    });
+    return {
+      sortedEvents: enriched.map(item => item.event),
+      distanceMap: map,
+    };
+  }, [events, userCoords]);
+
+  const locationInfo = useMemo(() => {
+    if (locationPermission === 'granted') {
+      return <Text style={styles.locationStatusText}>Visar händelser närmast din position.</Text>;
+    }
+    return (
+      <View style={styles.locationPrompt}>
+        <View style={styles.locationPromptCopy}>
+          <Text style={styles.locationPromptTitle}>Sortera efter din plats</Text>
+          <Text style={styles.locationPromptText}>Tillåt platstjänster för att se störningar nära dig.</Text>
+          {!canRequestLocation ? (
+            <Text style={styles.locationPromptText}>Aktivera platstjänster i systeminställningarna.</Text>
+          ) : null}
+        </View>
+        {canRequestLocation ? (
+          <Pressable
+            onPress={requestLocationPermission}
+            style={[styles.locationButton, requestingLocation && styles.locationButtonDisabled]}
+            disabled={requestingLocation}
+          >
+            <Text style={styles.locationButtonText}>{requestingLocation ? 'Begär…' : 'Dela plats'}</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    );
+  }, [canRequestLocation, locationPermission, requestingLocation, requestLocationPermission]);
+
   const listHeader = useMemo(
     () => (
       <View style={styles.listHeader}>
@@ -227,10 +362,12 @@ export function TrafficInfoSheet({
             <Text style={styles.refreshButtonText}>{loading ? 'Uppdaterar…' : 'Uppdatera'}</Text>
           </Pressable>
         </View>
+        {locationInfo}
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        {locationError ? <Text style={styles.errorText}>{locationError}</Text> : null}
       </View>
     ),
-    [error, loading, refetch, statusMessage],
+    [error, locationError, loading, locationInfo, refetch, statusMessage],
   );
 
   const listEmptyComponent = useMemo(
@@ -257,6 +394,8 @@ export function TrafficInfoSheet({
       const severityTheme = severityStyles[item.severity];
       const updatedLabel = formatRelativeTime(item.updatedAt) ?? formatClockTime(item.updatedAt);
       const startLabel = formatClockTime(item.startTime);
+      const distanceValue = distanceMap.get(item.id);
+      const distanceLabel = typeof distanceValue === 'number' ? formatDistanceLabel(distanceValue) : null;
       return (
         <View style={styles.incidentCard}>
           <View style={styles.incidentHeader}>
@@ -269,20 +408,23 @@ export function TrafficInfoSheet({
           {item.segment ? <Text style={styles.incidentSegment}>{item.segment}</Text> : null}
           {item.description ? <Text style={styles.incidentDetail}>{item.description}</Text> : null}
           <View style={styles.metaRow}>
-            <View style={[styles.severityChip, { backgroundColor: severityTheme.chip }]}>
-              <Text style={[styles.severityChipText, { color: severityTheme.text }]}>
-                {item.impactLabel ?? item.severity.toUpperCase()}
+            <View style={styles.metaLeft}>
+              <View style={[styles.severityChip, { backgroundColor: severityTheme.chip }]}>
+                <Text style={[styles.severityChipText, { color: severityTheme.text }]}>
+                  {item.impactLabel ?? item.severity.toUpperCase()}
+                </Text>
+              </View>
+              <Text style={styles.metaText}>
+                {startLabel ? `Start ${startLabel}` : 'Start okänd'}
+                {item.endTime ? ` · Slut ${formatClockTime(item.endTime)}` : ''}
               </Text>
             </View>
-            <Text style={styles.metaText}>
-              {startLabel ? `Start ${startLabel}` : 'Start okänd'}
-              {item.endTime ? ` · Slut ${formatClockTime(item.endTime)}` : ''}
-            </Text>
+            {distanceLabel ? <Text style={styles.distanceText}>{distanceLabel}</Text> : null}
           </View>
         </View>
       );
     },
-    [],
+    [distanceMap],
   );
 
   const keyExtractor = useCallback((item: TrafficEvent) => item.id, []);
@@ -311,7 +453,7 @@ export function TrafficInfoSheet({
         </GestureDetector>
 
         <FlatList
-          data={events}
+          data={sortedEvents}
           keyExtractor={keyExtractor}
           renderItem={renderEvent}
           contentContainerStyle={styles.listContent}
@@ -389,6 +531,50 @@ const styles = StyleSheet.create({
   listHeader: {
     gap: 6,
     marginBottom: 12,
+  },
+  locationPrompt: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(13, 25, 48, 0.5)',
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  locationPromptCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  locationPromptTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  locationPromptText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.75)',
+  },
+  locationButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  locationButtonDisabled: {
+    opacity: 0.5,
+  },
+  locationButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  locationStatusText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.7)',
+    marginTop: 8,
   },
   itemSeparator: {
     height: 12,
@@ -491,6 +677,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 4,
   },
+  metaLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
   severityChip: {
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -504,5 +696,9 @@ const styles = StyleSheet.create({
   metaText: {
     fontSize: 12,
     color: 'rgba(255,255,255,0.6)',
+  },
+  distanceText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.75)',
   },
 });
