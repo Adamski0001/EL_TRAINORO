@@ -1,6 +1,7 @@
+import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import Animated, {
@@ -21,6 +22,7 @@ import {
 } from './components/traffic/TrafficInfoSheet';
 import { ReloadProvider } from './contexts/ReloadContext';
 import { useFrameRateLogger } from './hooks/useFrameRateLogger';
+import { useNotificationPermission } from './hooks/useNotificationPermission';
 import type { TrainPosition } from './types/trains';
 type PrimaryNavKey = Exclude<NavKey, 'traffic'>;
 
@@ -35,6 +37,16 @@ const SWEDEN_REGION = {
 };
 
 const RAIL_TILE_URL = 'https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 export default function App() {
   return (
@@ -55,6 +67,24 @@ function AppContent() {
   const [mapFocusRequest, setMapFocusRequest] = useState<{ trainId: string; token: number } | null>(null);
   const navTranslateY = useSharedValue(0);
   useFrameRateLogger('root', PERF_LOGGING_ENABLED);
+  const { status: notificationStatus, request: requestNotificationPermission } = useNotificationPermission();
+
+  useEffect(() => {
+    if (notificationStatus === Notifications.PermissionStatus.UNDETERMINED) {
+      void requestNotificationPermission();
+    }
+  }, [notificationStatus, requestNotificationPermission]);
+
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      Notifications.setNotificationChannelAsync('traffic-alerts', {
+        name: 'Trafiknotiser',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#FF231F7C',
+      }).catch(error => console.warn('[Notifications] channel error', error));
+    }
+  }, []);
 
   const openTrainDetails = useCallback((train: TrainPosition, options: { focus?: boolean } = {}) => {
     setTrafficSheetVisible(false);
@@ -152,6 +182,7 @@ function AppContent() {
             visible={trafficSheetVisible}
             initialSnap="half"
             onSnapPointChange={setTrafficSnap}
+            notificationStatus={notificationStatus}
             onClose={() => {
               setTrafficSheetVisible(false);
               setTrafficSnap('hidden');

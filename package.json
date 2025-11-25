@@ -9,8 +9,11 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~54.0.25",
     "expo-blur": "~15.0.7",
+    "expo-location": "~19.0.7",
+    "expo-notifications": "~0.32.13",
     "expo-status-bar": "~3.0.8",
     "lucide-react-native": "^0.554.0",
     "react": "19.1.0",
@@ -24,6 +27,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
+    "@types/react-native": "^0.72.8",
     "babel-preset-expo": "~11.0.0",
     "typescript": "~5.9.2"
   },

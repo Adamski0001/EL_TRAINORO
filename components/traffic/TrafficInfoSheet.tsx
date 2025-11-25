@@ -1,4 +1,5 @@
 import { BlurView } from 'expo-blur';
+import type { PermissionStatus as NotificationPermissionStatus } from 'expo-notifications';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -19,8 +20,12 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { useTrafficEventSummaries } from '../../hooks/useTrafficEventSummaries';
 import { useTrafficEvents } from '../../hooks/useTrafficEvents';
+import { useTrafficAlerts } from '../../hooks/useTrafficAlerts';
 import { useUserLocation } from '../../hooks/useUserLocation';
+import { formatDistanceLabel } from '../../lib/geo';
+import { computeEventDistance } from '../../lib/trafficEventUtils';
 import type { TrafficEvent } from '../../types/traffic';
 import type { TrafficSheetSnapPoint } from './sheetSnapPoints';
 import {
@@ -41,6 +46,7 @@ type TrafficInfoSheetProps = {
   initialSnap?: Exclude<TrafficSheetSnapPoint, 'hidden'>;
   onClose?: () => void;
   onSnapPointChange?: (point: TrafficSheetSnapPoint) => void;
+  notificationStatus?: NotificationPermissionStatus;
 };
 
 const severityStyles: Record<TrafficEvent['severity'], { dot: string; chip: string; text: string }> = {
@@ -64,56 +70,6 @@ const severityStyles: Record<TrafficEvent['severity'], { dot: string; chip: stri
     chip: 'rgba(248, 113, 113, 0.18)',
     text: '#fecaca',
   },
-};
-
-type Coordinates = {
-  latitude: number;
-  longitude: number;
-};
-
-const EARTH_RADIUS_KM = 6_371;
-
-const toRadians = (value: number) => (value * Math.PI) / 180;
-
-const haversineDistance = (a: Coordinates, b: Coordinates) => {
-  const dLat = toRadians(b.latitude - a.latitude);
-  const dLon = toRadians(b.longitude - a.longitude);
-  const lat1 = toRadians(a.latitude);
-  const lat2 = toRadians(b.latitude);
-  const sinLat = Math.sin(dLat / 2);
-  const sinLon = Math.sin(dLon / 2);
-  const haversine = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon;
-  return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(haversine));
-};
-
-const computeEventDistance = (event: TrafficEvent, coords: Coordinates): number | null => {
-  let best: number | null = null;
-  event.stations.forEach(station => {
-    if (typeof station.latitude !== 'number' || typeof station.longitude !== 'number') {
-      return;
-    }
-    const candidate = haversineDistance(
-      { latitude: station.latitude, longitude: station.longitude },
-      coords,
-    );
-    if (best === null || candidate < best) {
-      best = candidate;
-    }
-  });
-  return best;
-};
-
-const formatDistanceLabel = (kilometers: number): string => {
-  if (kilometers >= 1) {
-    const digits = kilometers >= 10 ? 0 : 1;
-    const formatter = new Intl.NumberFormat('sv-SE', {
-      minimumFractionDigits: digits,
-      maximumFractionDigits: digits,
-    });
-    return `${formatter.format(kilometers)} km bort`;
-  }
-  const meters = Math.max(1, Math.round(kilometers * 1_000));
-  return `${meters} m bort`;
 };
 
 const formatClockTime = (value: string | Date | null) => {
@@ -155,6 +111,7 @@ export function TrafficInfoSheet({
   initialSnap = 'half',
   onClose,
   onSnapPointChange,
+  notificationStatus,
 }: TrafficInfoSheetProps) {
   const translateY = useSharedValue(SHEET_SNAP_POINTS.hidden);
   const startY = useSharedValue(SHEET_SNAP_POINTS.hidden);
@@ -171,6 +128,13 @@ export function TrafficInfoSheet({
     loading: requestingLocation,
     error: locationError,
   } = useUserLocation({ active: visible });
+  const eventSummaries = useTrafficEventSummaries(events);
+  useTrafficAlerts({
+    events,
+    userCoords,
+    permissionStatus: notificationStatus ?? 'undetermined',
+    summaries: eventSummaries,
+  });
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -396,6 +360,7 @@ export function TrafficInfoSheet({
       const startLabel = formatClockTime(item.startTime);
       const distanceValue = distanceMap.get(item.id);
       const distanceLabel = typeof distanceValue === 'number' ? formatDistanceLabel(distanceValue) : null;
+      const aiSummary = eventSummaries[item.id];
       return (
         <View style={styles.incidentCard}>
           <View style={styles.incidentHeader}>
@@ -407,6 +372,13 @@ export function TrafficInfoSheet({
           </View>
           {item.segment ? <Text style={styles.incidentSegment}>{item.segment}</Text> : null}
           {item.description ? <Text style={styles.incidentDetail}>{item.description}</Text> : null}
+          {aiSummary ? (
+            <View style={styles.aiSummaryCard}>
+              <Text style={styles.aiSummaryLabel}>AI-sammanfattning</Text>
+              <Text style={styles.aiSummaryText}>{aiSummary.summary}</Text>
+              {aiSummary.advice ? <Text style={styles.aiSummaryAdvice}>{aiSummary.advice}</Text> : null}
+            </View>
+          ) : null}
           <View style={styles.metaRow}>
             <View style={styles.metaLeft}>
               <View style={[styles.severityChip, { backgroundColor: severityTheme.chip }]}>
@@ -424,7 +396,7 @@ export function TrafficInfoSheet({
         </View>
       );
     },
-    [distanceMap],
+    [distanceMap, eventSummaries],
   );
 
   const keyExtractor = useCallback((item: TrafficEvent) => item.id, []);
@@ -670,6 +642,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: 'rgba(255,255,255,0.75)',
     lineHeight: 18,
+  },
+  aiSummaryCard: {
+    marginTop: 4,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(17, 40, 68, 0.6)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    gap: 4,
+  },
+  aiSummaryLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    color: '#7dd3fc',
+    textTransform: 'uppercase',
+  },
+  aiSummaryText: {
+    fontSize: 13,
+    color: '#e0f2fe',
+  },
+  aiSummaryAdvice: {
+    fontSize: 12,
+    color: 'rgba(224, 242, 254, 0.85)',
   },
   metaRow: {
     flexDirection: 'row',

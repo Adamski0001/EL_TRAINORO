@@ -140,7 +140,7 @@ export function useUserLocation(options: UseUserLocationOptions = {}): UserLocat
             distanceInterval: 500,
             timeInterval: 30_000,
           },
-          location => {
+          (location: Location.LocationObject) => {
             if (cancelled) {
               return;
             }
