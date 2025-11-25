@@ -305,6 +305,18 @@ const stopPolling = () => {
   abortController = null;
 };
 
+const resetInternalState = () => {
+  stopPolling();
+  trainCache.clear();
+  trainOrder = [];
+  trainOrderSet.clear();
+  firstLoad = true;
+  lastFullRefreshAt = 0;
+  latestServerTimestamp = null;
+  state = { ...DEFAULT_STATE };
+  emit();
+};
+
 const startPolling = () => {
   if (refreshTimer) {
     return;
@@ -388,5 +400,8 @@ export const trainPositionsStore = {
   },
   refetch(options: { forceFull?: boolean } = {}) {
     return loadPositions({ forceFull: options.forceFull ?? true });
+  },
+  reset() {
+    resetInternalState();
   },
 };

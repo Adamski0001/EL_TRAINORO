@@ -1,7 +1,7 @@
 import { BlurView } from 'expo-blur';
 import { Search as SearchIcon, TrainFront, Map as RouteIcon } from 'lucide-react-native';
-import { useEffect, useMemo, useState } from 'react';
-import { Dimensions, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Dimensions, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   Easing,
@@ -11,57 +11,23 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { useTrainSearchIndex } from '../hooks/useTrainSearchIndex';
+import type { TrainPosition } from '../types/trains';
+
 const SCREEN_WIDTH = Dimensions.get('window').width;
-
-type TrainSuggestion = {
-  id: string;
-  title: string;
-  route: string;
-  status: string;
-};
-
-const MOCK_TRAINS: TrainSuggestion[] = [
-  {
-    id: 'SJ2001',
-    title: 'SJ Snabbtåg 2001',
-    route: 'Stockholm C → Göteborg C',
-    status: 'Avgår 08:12 · I tid',
-  },
-  {
-    id: 'MTRX15',
-    title: 'MTRX 15',
-    route: 'Stockholm C → Göteborg C',
-    status: 'Avgår 09:05 · 5 min sen',
-  },
-  {
-    id: 'ÖTÅ120',
-    title: 'Öresundståg 120',
-    route: 'Malmö C → Göteborg C',
-    status: 'Avgår 10:25 · I tid',
-  },
-  {
-    id: 'NORD7',
-    title: 'Norrlandståget 7',
-    route: 'Stockholm C → Umeå Ö',
-    status: 'Avgår 11:10 · Spår 3',
-  },
-  {
-    id: 'PENDEL48',
-    title: 'Pendeltåg 48',
-    route: 'Södertälje C → Uppsala C',
-    status: 'Avgår 07:32 · I tid',
-  },
-];
 
 type SearchPanelProps = {
   visible: boolean;
+  onSelectTrain: (train: TrainPosition) => void;
+  onRequestClose: () => void;
 };
 
-export function SearchPanel({ visible }: SearchPanelProps) {
+export function SearchPanel({ visible, onSelectTrain, onRequestClose }: SearchPanelProps) {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const translateX = useSharedValue(SCREEN_WIDTH);
   const opacity = useSharedValue(0);
+  const { items } = useTrainSearchIndex();
 
   useEffect(() => {
     const shouldReset = !visible;
@@ -89,17 +55,24 @@ export function SearchPanel({ visible }: SearchPanelProps) {
     if (!q) {
       return [];
     }
-
-    return MOCK_TRAINS.filter(item => {
-      return (
-        item.id.toLowerCase().includes(q) ||
-        item.title.toLowerCase().includes(q) ||
-        item.route.toLowerCase().includes(q)
-      );
-    });
-  }, [query]);
+    return items.filter(item => item.searchText.includes(q)).slice(0, 10);
+  }, [items, query]);
 
   const showSuggestions = query.trim().length > 0 && suggestions.length > 0;
+  const handleSelectSuggestion = useCallback(
+    (train: TrainPosition) => {
+      onSelectTrain(train);
+      onRequestClose();
+    },
+    [onRequestClose, onSelectTrain],
+  );
+
+  const handleSubmit = useCallback(() => {
+    if (!suggestions.length) {
+      return;
+    }
+    handleSelectSuggestion(suggestions[0].train);
+  }, [handleSelectSuggestion, suggestions]);
 
   return (
     <Animated.View
@@ -120,26 +93,36 @@ export function SearchPanel({ visible }: SearchPanelProps) {
             autoCapitalize="none"
             value={query}
             onChangeText={setQuery}
+            onSubmitEditing={handleSubmit}
+            returnKeyType="search"
           />
         </BlurView>
       </View>
       {showSuggestions && (
         <View style={styles.suggestionsList}>
           {suggestions.map(item => (
-            <BlurView key={item.id} intensity={65} tint="dark" style={styles.suggestionCard}>
-              <View style={styles.suggestionIcon}>
-                <TrainFront size={18} color="#fff" strokeWidth={2.4} />
-              </View>
-              <View style={styles.suggestionBody}>
-                <Text style={styles.suggestionTitle}>{item.title}</Text>
-                <View style={styles.routeRow}>
-                  <RouteIcon size={14} color="rgba(255,255,255,0.5)" strokeWidth={2} />
-                  <Text style={styles.suggestionRoute}>{item.route}</Text>
+            <Pressable
+              key={item.id}
+              onPress={() => handleSelectSuggestion(item.train)}
+              style={({ pressed }) => [styles.suggestionPressable, pressed && styles.suggestionPressablePressed]}
+            >
+              <BlurView intensity={65} tint="dark" style={styles.suggestionCard}>
+                <View style={styles.suggestionIcon}>
+                  <TrainFront size={18} color="#fff" strokeWidth={2.4} />
                 </View>
-                <Text style={styles.suggestionStatus}>{item.status}</Text>
-              </View>
-              <Text style={styles.trainId}>{item.id}</Text>
-            </BlurView>
+                <View style={styles.suggestionBody}>
+                  <Text style={styles.suggestionTitle}>{item.title}</Text>
+                  <View style={styles.routeRow}>
+                    <RouteIcon size={14} color="rgba(255,255,255,0.5)" strokeWidth={2} />
+                    <Text style={styles.suggestionRoute}>{item.routeText ?? 'Rutt saknas'}</Text>
+                  </View>
+                  <Text style={styles.suggestionStatus}>{item.subtitle ?? 'Ingen operatör tillgänglig'}</Text>
+                </View>
+                <Text style={styles.trainId}>
+                  {item.train.advertisedTrainIdent ?? item.train.operationalTrainNumber ?? item.id}
+                </Text>
+              </BlurView>
+            </Pressable>
           ))}
         </View>
       )}
@@ -177,6 +160,12 @@ const styles = StyleSheet.create({
     width: SCREEN_WIDTH - 40,
     marginTop: 14,
     gap: 8,
+  },
+  suggestionPressable: {
+    borderRadius: 18,
+  },
+  suggestionPressablePressed: {
+    transform: [{ scale: 0.995 }],
   },
   suggestionCard: {
     flexDirection: 'row',

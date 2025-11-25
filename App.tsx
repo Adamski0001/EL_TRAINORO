@@ -11,6 +11,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { BottomNav, NavKey } from './components/BottomNav';
+import { ReloadButton } from './components/ReloadButton';
 import { TrainMapContainer } from './components/map/TrainMapContainer';
 import { SearchPanel } from './components/SearchPanel';
 import { TrainPanelContainer } from './components/trains/TrainPanelContainer';
@@ -18,6 +19,7 @@ import {
   TrafficInfoSheet,
   TrafficSheetSnapPoint,
 } from './components/traffic/TrafficInfoSheet';
+import { ReloadProvider } from './contexts/ReloadContext';
 import { useFrameRateLogger } from './hooks/useFrameRateLogger';
 import type { TrainPosition } from './types/trains';
 type PrimaryNavKey = Exclude<NavKey, 'traffic'>;
@@ -35,6 +37,14 @@ const SWEDEN_REGION = {
 const RAIL_TILE_URL = 'https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png';
 
 export default function App() {
+  return (
+    <ReloadProvider>
+      <AppContent />
+    </ReloadProvider>
+  );
+}
+
+function AppContent() {
   const [activeNav, setActiveNav] = useState<NavKey>('home');
   const [trafficSheetVisible, setTrafficSheetVisible] = useState(false);
   const [trafficSnap, setTrafficSnap] = useState<TrafficSheetSnapPoint>('hidden');
@@ -42,17 +52,34 @@ export default function App() {
   const [trainSnap, setTrainSnap] = useState<TrafficSheetSnapPoint>('hidden');
   const [primaryNav, setPrimaryNav] = useState<PrimaryNavKey>('home');
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
+  const [mapFocusRequest, setMapFocusRequest] = useState<{ trainId: string; token: number } | null>(null);
   const navTranslateY = useSharedValue(0);
   useFrameRateLogger('root', PERF_LOGGING_ENABLED);
 
+  const openTrainDetails = useCallback((train: TrainPosition, options: { focus?: boolean } = {}) => {
+    setTrafficSheetVisible(false);
+    setTrainSnap('half');
+    setSelectedTrainId(train.id);
+    setTrainSheetVisible(true);
+    if (options.focus) {
+      setMapFocusRequest({ trainId: train.id, token: Date.now() });
+    }
+  }, []);
+
   const handleSelectTrain = useCallback(
     (train: TrainPosition) => {
-      setTrafficSheetVisible(false);
-      setTrainSnap('half');
-      setSelectedTrainId(train.id);
-      setTrainSheetVisible(true);
+      openTrainDetails(train);
     },
-    [],
+    [openTrainDetails],
+  );
+
+  const handleSearchSelectTrain = useCallback(
+    (train: TrainPosition) => {
+      openTrainDetails(train, { focus: true });
+      setPrimaryNav('home');
+      setActiveNav('home');
+    },
+    [openTrainDetails],
   );
 
   const handleTrainSheetClose = useCallback(() => {
@@ -97,8 +124,16 @@ export default function App() {
             tileUrl={RAIL_TILE_URL}
             selectedTrainId={selectedTrainId}
             onSelectTrain={handleSelectTrain}
+            focusRequest={mapFocusRequest}
           />
-          <SearchPanel visible={activeNav === 'search'} />
+          <SearchPanel
+            visible={activeNav === 'search'}
+            onSelectTrain={handleSearchSelectTrain}
+            onRequestClose={() => {
+              setPrimaryNav('home');
+              setActiveNav('home');
+            }}
+          />
           <TrainPanelContainer
             visible={trainSheetVisible}
             initialSnap="half"
@@ -106,6 +141,7 @@ export default function App() {
             onSnapPointChange={setTrainSnap}
             onClose={handleTrainSheetClose}
           />
+          <ReloadButton />
           <Animated.View
             pointerEvents="box-none"
             style={[styles.bottomNavWrapper, navAnimatedStyle]}

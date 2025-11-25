@@ -1,9 +1,14 @@
-import { memo } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { StyleProp, ViewStyle } from 'react-native';
 import MapView, { Region, UrlTile } from 'react-native-maps';
 
 import type { TrainPosition } from '../../types/trains';
 import { TrainMarkers } from '../trains/TrainMarkers';
+
+type FocusRequest = {
+  trainId: string;
+  token: number;
+} | null;
 
 type TrainMapProps = {
   style?: StyleProp<ViewStyle>;
@@ -12,6 +17,7 @@ type TrainMapProps = {
   trains: TrainPosition[];
   selectedTrainId: string | null;
   onSelectTrain: (train: TrainPosition) => void;
+  focusRequest: FocusRequest;
 };
 
 function TrainMapComponent({
@@ -21,9 +27,34 @@ function TrainMapComponent({
   trains,
   selectedTrainId,
   onSelectTrain,
+  focusRequest,
 }: TrainMapProps) {
+  const mapRef = useRef<MapView | null>(null);
+
+  useEffect(() => {
+    if (!focusRequest) {
+      return;
+    }
+    const target = trains.find(train => train.id === focusRequest.trainId);
+    if (!target || !mapRef.current) {
+      return;
+    }
+    mapRef.current.animateToRegion(
+      {
+        latitude: target.coordinate.latitude,
+        longitude: target.coordinate.longitude,
+        latitudeDelta: 2,
+        longitudeDelta: 2,
+      },
+      650,
+    );
+  }, [focusRequest, trains]);
+
   return (
     <MapView
+      ref={map => {
+        mapRef.current = map;
+      }}
       style={style}
       initialRegion={initialRegion}
       showsCompass
@@ -48,5 +79,6 @@ export const TrainMap = memo(
     prev.onSelectTrain === next.onSelectTrain &&
     prev.initialRegion === next.initialRegion &&
     prev.tileUrl === next.tileUrl &&
-    prev.style === next.style,
+    prev.style === next.style &&
+    prev.focusRequest === next.focusRequest,
 );

@@ -12,6 +12,7 @@ type TrainMapContainerProps = {
   tileUrl: string;
   selectedTrainId: string | null;
   onSelectTrain: (train: TrainPosition) => void;
+  focusRequest: { trainId: string; token: number } | null;
 };
 
 function TrainMapContainerComponent({
@@ -20,6 +21,7 @@ function TrainMapContainerComponent({
   tileUrl,
   selectedTrainId,
   onSelectTrain,
+  focusRequest,
 }: TrainMapContainerProps) {
   const { trains } = useTrainPositions();
   const handleSelect = useCallback(
@@ -37,6 +39,7 @@ function TrainMapContainerComponent({
       trains={trains}
       selectedTrainId={selectedTrainId}
       onSelectTrain={handleSelect}
+      focusRequest={focusRequest}
     />
   );
 }
