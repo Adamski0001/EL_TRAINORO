@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
 import { trainPositionsStore } from '../state/trainPositionsStore';
+import { trafficEventsStore } from '../state/trafficEventsStore';
 
 type ReloadContextValue = {
   reloadApp: () => Promise<void>;
@@ -18,6 +19,7 @@ export function ReloadProvider({ children }: { children: ReactNode }) {
 
   const reloadApp = useCallback(async () => {
     trainPositionsStore.reset();
+    trafficEventsStore.reset();
     setReloadKey(key => key + 1);
   }, []);
 

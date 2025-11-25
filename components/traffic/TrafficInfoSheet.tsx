@@ -1,6 +1,8 @@
 import { BlurView } from 'expo-blur';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,6 +19,8 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { useTrafficEvents } from '../../hooks/useTrafficEvents';
+import type { TrafficEvent } from '../../types/traffic';
 import type { TrafficSheetSnapPoint } from './sheetSnapPoints';
 import {
   SHEET_BOTTOM_LOCK_REGION,
@@ -38,38 +42,62 @@ type TrafficInfoSheetProps = {
   onSnapPointChange?: (point: TrafficSheetSnapPoint) => void;
 };
 
-const INCIDENTS = [
-  {
-    id: 'incident-01',
-    title: 'Signalfel vid Solna',
-    detail: 'Avgångar mot Uppsala dirigeras om · +15 min',
-    updated: '08:32',
+const severityStyles: Record<TrafficEvent['severity'], { dot: string; chip: string; text: string }> = {
+  low: {
+    dot: '#34d399',
+    chip: 'rgba(52, 211, 153, 0.16)',
+    text: '#6ee7b7',
   },
-  {
-    id: 'incident-02',
-    title: 'Kontaktledningsfel Hallsberg',
-    detail: 'Godståg spåras om · Begränsad kapacitet',
-    updated: '07:58',
+  medium: {
+    dot: '#fbbf24',
+    chip: 'rgba(251, 191, 36, 0.16)',
+    text: '#fcd34d',
   },
-  {
-    id: 'incident-03',
-    title: 'Personalbrist Västra Stambanan',
-    detail: 'Inställd avgång 10:05 Göteborg C – Stockholm C',
-    updated: '07:40',
+  high: {
+    dot: '#fb7185',
+    chip: 'rgba(251, 113, 133, 0.16)',
+    text: '#fda4af',
   },
-  {
-    id: 'incident-04',
-    title: 'Arbete på spår Malmö – Lund',
-    detail: 'Reducerad hastighet · Räkna med +5 min',
-    updated: '06:55',
+  critical: {
+    dot: '#f87171',
+    chip: 'rgba(248, 113, 113, 0.18)',
+    text: '#fecaca',
   },
-  {
-    id: 'incident-05',
-    title: 'Fordonfel Arlanda Express',
-    detail: 'Var 20:e minut tills vidare',
-    updated: '06:20',
-  },
-];
+};
+
+const formatClockTime = (value: string | Date | null) => {
+  if (!value) {
+    return null;
+  }
+  const date = typeof value === 'string' ? new Date(value) : value;
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toLocaleTimeString('sv-SE', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const formatRelativeTime = (value: string | null) => {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 60_000) {
+    return 'Nyss';
+  }
+  const minutes = Math.round(diffMs / 60_000);
+  if (minutes < 60) {
+    return `${minutes} min sedan`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours} h sedan`;
+};
 
 export function TrafficInfoSheet({
   visible,
@@ -82,6 +110,7 @@ export function TrafficInfoSheet({
   const [currentSnap, setCurrentSnap] = useState<TrafficSheetSnapPoint>('hidden');
   const onCloseRef = useRef(onClose);
   const onSnapPointChangeRef = useRef(onSnapPointChange);
+  const { events, loading, error, lastUpdated, refetch } = useTrafficEvents();
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -205,15 +234,63 @@ export function TrafficInfoSheet({
           showsVerticalScrollIndicator={false}
           scrollEnabled={currentSnap === 'full'}
         >
-          {INCIDENTS.map(incident => (
-            <View key={incident.id} style={styles.incidentCard}>
-              <View style={styles.incidentHeader}>
-                <Text style={styles.incidentTitle}>{incident.title}</Text>
-                <Text style={styles.incidentTime}>{incident.updated}</Text>
-              </View>
-              <Text style={styles.incidentDetail}>{incident.detail}</Text>
+          <View style={styles.statusRow}>
+            <View>
+              <Text style={styles.statusText}>
+                {loading && !events.length
+                  ? 'Läser in trafikhändelser…'
+                  : lastUpdated
+                    ? `Senast uppdaterad ${formatClockTime(lastUpdated)}`
+                    : 'Ingen uppdatering ännu'}
+              </Text>
+              <Text style={styles.statusSubtle}>Automatisk uppdatering var tredje minut</Text>
             </View>
-          ))}
+            <Pressable onPress={refetch} style={styles.refreshButton} disabled={loading}>
+              <Text style={styles.refreshButtonText}>{loading ? 'Uppdaterar…' : 'Uppdatera'}</Text>
+            </Pressable>
+          </View>
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {loading && !events.length ? (
+            <View style={styles.placeholderCard}>
+              <ActivityIndicator color="#fff" />
+              <Text style={styles.placeholderText}>Hämtar liveinformation…</Text>
+            </View>
+          ) : null}
+          {!loading && !events.length ? (
+            <View style={styles.placeholderCard}>
+              <Text style={styles.placeholderTitle}>Ingen känd störning</Text>
+              <Text style={styles.placeholderText}>All trafik ser ut att rulla enligt plan just nu.</Text>
+            </View>
+          ) : null}
+          {events.map(event => {
+            const severityTheme = severityStyles[event.severity];
+            const updatedLabel = formatRelativeTime(event.updatedAt) ?? formatClockTime(event.updatedAt);
+            const startLabel = formatClockTime(event.startTime);
+            return (
+              <View key={event.id} style={styles.incidentCard}>
+                <View style={styles.incidentHeader}>
+                  <View style={styles.titleRow}>
+                    <View style={[styles.severityDot, { backgroundColor: severityTheme.dot }]} />
+                    <Text style={styles.incidentTitle}>{event.title}</Text>
+                  </View>
+                  {updatedLabel ? <Text style={styles.incidentTime}>{updatedLabel}</Text> : null}
+                </View>
+                {event.segment ? <Text style={styles.incidentSegment}>{event.segment}</Text> : null}
+                {event.description ? <Text style={styles.incidentDetail}>{event.description}</Text> : null}
+                <View style={styles.metaRow}>
+                  <View style={[styles.severityChip, { backgroundColor: severityTheme.chip }]}> 
+                    <Text style={[styles.severityChipText, { color: severityTheme.text }]}>
+                      {event.impactLabel ?? event.severity.toUpperCase()}
+                    </Text>
+                  </View>
+                  <Text style={styles.metaText}>
+                    {startLabel ? `Start ${startLabel}` : 'Start okänd'}
+                    {event.endTime ? ` · Slut ${formatClockTime(event.endTime)}` : ''}
+                  </Text>
+                </View>
+              </View>
+            );
+          })}
         </ScrollView>
       </BlurView>
     </Animated.View>
@@ -277,6 +354,55 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingBottom: 80,
   },
+  statusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  statusText: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.85)',
+  },
+  statusSubtle: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.55)',
+  },
+  refreshButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  refreshButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  errorText: {
+    color: '#fca5a5',
+    fontSize: 12,
+  },
+  placeholderCard: {
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    padding: 18,
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(13, 25, 48, 0.4)',
+  },
+  placeholderTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  placeholderText: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.75)',
+    textAlign: 'center',
+  },
   incidentCard: {
     backgroundColor: 'rgba(13, 25, 48, 0.6)',
     borderRadius: 18,
@@ -290,18 +416,54 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  severityDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+  },
   incidentTitle: {
     fontSize: 15,
     fontWeight: '600',
     color: '#fff',
+    flex: 1,
   },
   incidentTime: {
     fontSize: 12,
     color: 'rgba(255,255,255,0.6)',
   },
+  incidentSegment: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.75)',
+  },
   incidentDetail: {
     fontSize: 13,
     color: 'rgba(255,255,255,0.75)',
     lineHeight: 18,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  severityChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 14,
+  },
+  severityChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  metaText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.6)',
   },
 });

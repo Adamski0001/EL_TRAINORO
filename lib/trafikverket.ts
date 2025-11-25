@@ -48,6 +48,102 @@ const buildTrainPositionQuery = (options: { modifiedSince?: string | Date | null
 </REQUEST>`;
 };
 
+const OPERATIVE_EVENT_INCLUDES = [
+  'OperativeEventId',
+  'StartDateTime',
+  'EndDateTime',
+  'EventState',
+  'EventTrafficType',
+  'EventType.Description',
+  'EventType.EventTypeCode',
+  'ModifiedDateTime',
+  'RailRoadTimeForServiceResumption',
+  'RoadDegreeOfImpact',
+  'TrafficImpact.PublicMessage.Header',
+  'TrafficImpact.PublicMessage.Description',
+  'TrafficImpact.StartDateTime',
+  'TrafficImpact.EndDateTime',
+  'TrafficImpact.SelectedSection.FromLocation.Signature',
+  'TrafficImpact.SelectedSection.ToLocation.Signature',
+  'TrafficImpact.SelectedSection.ViaLocation.Signature',
+  'TrafficImpact.SelectedSection.SectionLocation.Signature',
+  'TrafficImpact.SelectedSection.OperatingLevel',
+  'EventSection.FromLocation.Signature',
+  'EventSection.ToLocation.Signature',
+  'EventSection.ViaLocation.Signature',
+];
+
+const RAILWAY_EVENT_INCLUDES = [
+  'EventId',
+  'StartDateTime',
+  'EndDateTime',
+  'ReasonCode',
+  'OperativeEventId',
+  'EventStatus',
+  'ModifiedDateTime',
+  'SelectedSection.FromLocation.Signature',
+  'SelectedSection.ToLocation.Signature',
+  'SelectedSection.ViaLocation.Signature',
+  'SelectedSection.IntermediateLocation.Signature',
+];
+
+const buildOperativeEventQuery = (options: { modifiedSince?: string | Date | null } = {}) => {
+  const sinceIso = (() => {
+    if (options.modifiedSince) {
+      return typeof options.modifiedSince === 'string' ? options.modifiedSince : options.modifiedSince.toISOString();
+    }
+    const fallback = new Date(Date.now() - 36 * 60 * 60 * 1000);
+    return fallback.toISOString();
+  })();
+
+  const filterExpressions = [
+    '<EQ name="Deleted" value="false" />',
+    '<EQ name="EventState" value="1" />',
+    `<GT name="StartDateTime" value="${escapeXml(sinceIso)}" />`,
+    '<OR><EQ name="EventTrafficType" value="0" /><EQ name="EventTrafficType" value="2" /></OR>',
+  ];
+
+  const filterBody =
+    filterExpressions.length === 1 ? filterExpressions[0] : `<AND>${filterExpressions.join('')}</AND>`;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<REQUEST>
+  <LOGIN authenticationkey="%API_KEY%" />
+  <QUERY objecttype="OperativeEvent" schemaversion="1.0" namespace="ols.open">
+    <FILTER>
+      ${filterBody}
+    </FILTER>
+    ${OPERATIVE_EVENT_INCLUDES.map(field => `<INCLUDE>${field}</INCLUDE>`).join('\n    ')}
+  </QUERY>
+</REQUEST>`;
+};
+
+const buildRailwayEventQuery = (options: { modifiedSince?: string | Date | null } = {}) => {
+  const sinceIso = (() => {
+    if (options.modifiedSince) {
+      return typeof options.modifiedSince === 'string' ? options.modifiedSince : options.modifiedSince.toISOString();
+    }
+    const fallback = new Date(Date.now() - 36 * 60 * 60 * 1000);
+    return fallback.toISOString();
+  })();
+
+  const filterExpressions = ['<EQ name="Deleted" value="false" />', `<GT name="StartDateTime" value="${escapeXml(sinceIso)}" />`];
+
+  const filterBody =
+    filterExpressions.length === 1 ? filterExpressions[0] : `<AND>${filterExpressions.join('')}</AND>`;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<REQUEST>
+  <LOGIN authenticationkey="%API_KEY%" />
+  <QUERY objecttype="RailwayEvent" schemaversion="1.0" namespace="ols.open" orderby="StartDateTime">
+    <FILTER>
+      ${filterBody}
+    </FILTER>
+    ${RAILWAY_EVENT_INCLUDES.map(field => `<INCLUDE>${field}</INCLUDE>`).join('\n    ')}
+  </QUERY>
+</REQUEST>`;
+};
+
 type XmlNode = Record<string, unknown>;
 
 type TrainStationMetadata = {
@@ -140,6 +236,14 @@ const parseBoolean = (value: unknown): boolean | null => {
     }
   }
   return null;
+};
+
+const pickLocationSignatureValue = (value: unknown): string | null => {
+  const node = pickRecordNode(value);
+  if (node && typeof node.Signature !== 'undefined') {
+    return pickStringValue(node.Signature);
+  }
+  return pickStringValue(value);
 };
 
 const chunkArray = <T,>(items: T[], chunkSize: number): T[][] => {
@@ -925,4 +1029,155 @@ export async function fetchTrainAnnouncementsByIdentifiers(
   }
 
   return records;
+}
+
+export type OperativeEventApiEntry = {
+  operativeEventId: string | null;
+  startDateTime: string | null;
+  endDateTime: string | null;
+  eventState: number | null;
+  eventTrafficType: number | null;
+  eventTypeDescription: string | null;
+  eventTypeCode: string | null;
+  modifiedDateTime: string | null;
+  railRoadTimeForServiceResumption: string | null;
+  roadDegreeOfImpact: number | null;
+  eventSections: EventSectionApiEntry[];
+  trafficImpacts: TrafficImpactApiEntry[];
+};
+
+export type RailwayEventApiEntry = {
+  eventId: string | null;
+  operativeEventId: string | null;
+  startDateTime: string | null;
+  endDateTime: string | null;
+  reasonCode: string | null;
+  eventStatus: string | null;
+  modifiedDateTime: string | null;
+  sections: SelectedSectionApiEntry[];
+};
+
+export type EventSectionApiEntry = {
+  fromSignature: string | null;
+  toSignature: string | null;
+  viaSignature: string | null;
+};
+
+export type SelectedSectionApiEntry = EventSectionApiEntry & {
+  operatingLevel: number | null;
+  intermediateSignatures?: string[];
+};
+
+export type TrafficImpactApiEntry = {
+  startDateTime: string | null;
+  endDateTime: string | null;
+  publicMessageHeader: string | null;
+  publicMessageDescription: string | null;
+  selectedSections: SelectedSectionApiEntry[];
+  operatingLevel: number | null;
+};
+
+const mapSelectedSections = (value: unknown): SelectedSectionApiEntry[] =>
+  ensureArray(value as XmlNode | XmlNode[])
+    .map(section => {
+      const record = section as XmlNode;
+      const intermediate = ensureArray(record?.IntermediateLocation as XmlNode | XmlNode[])
+        .map(loc => pickLocationSignatureValue(loc?.Signature ?? loc))
+        .filter((item): item is string => Boolean(item));
+      const sectionLocations = ensureArray(record?.SectionLocation as XmlNode | XmlNode[])
+        .map(loc => pickLocationSignatureValue(loc?.Signature ?? loc))
+        .filter((item): item is string => Boolean(item));
+      return {
+        fromSignature: pickLocationSignatureValue(record?.FromLocation),
+        toSignature: pickLocationSignatureValue(record?.ToLocation),
+        viaSignature: pickLocationSignatureValue(record?.ViaLocation),
+        operatingLevel: parseNumber(record?.OperatingLevel),
+        intermediateSignatures: [...sectionLocations, ...intermediate],
+      };
+    })
+    .filter(
+      entry =>
+        entry.fromSignature ||
+        entry.toSignature ||
+        entry.viaSignature ||
+        (entry.intermediateSignatures?.length ?? 0) > 0 ||
+        entry.operatingLevel !== null,
+    );
+
+const mapEventSections = (value: unknown): EventSectionApiEntry[] =>
+  ensureArray(value as XmlNode | XmlNode[])
+    .map(section => {
+      const record = section as XmlNode;
+      return {
+        fromSignature: pickLocationSignatureValue(record?.FromLocation),
+        toSignature: pickLocationSignatureValue(record?.ToLocation),
+        viaSignature: pickLocationSignatureValue(record?.ViaLocation),
+      };
+    })
+    .filter(entry => entry.fromSignature || entry.toSignature || entry.viaSignature);
+
+const mapTrafficImpacts = (value: unknown): TrafficImpactApiEntry[] =>
+  ensureArray(value as XmlNode | XmlNode[]).map(impact => {
+    const record = impact as XmlNode;
+    const sections = mapSelectedSections(record?.SelectedSection);
+    const maxOperatingLevel = sections.reduce<number | null>((max, section) => {
+      if (section.operatingLevel !== null && section.operatingLevel !== undefined) {
+        if (max === null || section.operatingLevel > max) {
+          return section.operatingLevel;
+        }
+      }
+      return max;
+    }, null);
+    const publicMessage = pickRecordNode(record?.PublicMessage);
+    return {
+      startDateTime: pickStringValue(record?.StartDateTime) ?? null,
+      endDateTime: pickStringValue(record?.EndDateTime) ?? null,
+      publicMessageHeader: pickStringValue(publicMessage?.Header) ?? null,
+      publicMessageDescription: pickStringValue(publicMessage?.Description) ?? null,
+      selectedSections: sections,
+      operatingLevel: maxOperatingLevel,
+    };
+  });
+
+const mapOperativeEvent = (entry: XmlNode): OperativeEventApiEntry => {
+  const eventType = pickRecordNode(entry?.EventType);
+  return {
+    operativeEventId: pickStringValue(entry?.OperativeEventId) ?? null,
+    startDateTime: pickStringValue(entry?.StartDateTime) ?? null,
+    endDateTime: pickStringValue(entry?.EndDateTime) ?? null,
+    eventState: parseNumber(entry?.EventState),
+    eventTrafficType: parseNumber(entry?.EventTrafficType),
+    eventTypeDescription: pickStringValue(eventType?.Description) ?? null,
+    eventTypeCode: pickStringValue(eventType?.EventTypeCode) ?? null,
+    modifiedDateTime: pickStringValue(entry?.ModifiedDateTime) ?? null,
+    railRoadTimeForServiceResumption: pickStringValue(entry?.RailRoadTimeForServiceResumption) ?? null,
+    roadDegreeOfImpact: parseNumber(entry?.RoadDegreeOfImpact),
+    eventSections: mapEventSections(entry?.EventSection),
+    trafficImpacts: mapTrafficImpacts(entry?.TrafficImpact),
+  };
+};
+
+const mapRailwayEvent = (entry: XmlNode): RailwayEventApiEntry => {
+  return {
+    eventId: pickStringValue(entry?.EventId) ?? null,
+    operativeEventId: pickStringValue(entry?.OperativeEventId) ?? null,
+    startDateTime: pickStringValue(entry?.StartDateTime) ?? null,
+    endDateTime: pickStringValue(entry?.EndDateTime) ?? null,
+    reasonCode: pickStringValue(entry?.ReasonCode) ?? null,
+    eventStatus: pickStringValue(entry?.EventStatus) ?? null,
+    modifiedDateTime: pickStringValue(entry?.ModifiedDateTime) ?? null,
+    sections: mapSelectedSections(entry?.SelectedSection),
+  };
+};
+
+export async function fetchOperativeEvents(options: { signal?: AbortSignal; modifiedSince?: string | Date | null } = {}) {
+  const xml = await sendTrafikverketRequest(buildOperativeEventQuery({ modifiedSince: options.modifiedSince ?? null }), options.signal);
+  const records = parseApiResponse(xml, 'OperativeEvent');
+  return records.map(mapOperativeEvent);
+}
+
+export async function fetchRailwayEvents(options: { signal?: AbortSignal; modifiedSince?: string | Date | null } = {}) {
+  const xml = await sendTrafikverketRequest(buildRailwayEventQuery({ modifiedSince: options.modifiedSince ?? null }), options.signal);
+  const records = parseApiResponse(xml, 'RailwayEvent');
+  return records.map(mapRailwayEvent);
 }
