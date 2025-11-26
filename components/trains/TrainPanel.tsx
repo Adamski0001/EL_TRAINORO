@@ -164,7 +164,7 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
   }, []);
 
   const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
+    top: translateY.value,
   }));
 
   useEffect(() => {
@@ -374,7 +374,7 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
-          scrollEnabled={currentSnap === 'full'}
+          nestedScrollEnabled
         >
           <View style={styles.metaRow}>
             <View style={styles.metaItem}>
