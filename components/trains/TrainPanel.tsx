@@ -39,14 +39,19 @@ import {
 
 type StopState = 'completed' | 'current' | 'upcoming';
 
+type StopTimingInfo = {
+  plannedLabel: string;
+  actualLabel: string;
+  hasDelay: boolean;
+};
+
 type RenderableStop = TrainStop & {
   etaMinutes: number | null;
   displayTime: string;
   timestamp: number | null;
   state: StopState;
-  plannedLabel: string;
-  reportedLabel: string;
-  hasDeviation: boolean;
+  arrivalTiming: StopTimingInfo;
+  departureTiming: StopTimingInfo;
 };
 
 const ACCENT_COLORS = ['#ffb703', '#fb8500', '#06d6a0', '#4cc9f0', '#f72585'];
@@ -79,6 +84,18 @@ const formatDisplayTime = (value: Date | null) => {
     hour: '2-digit',
     minute: '2-digit',
   });
+};
+
+const buildTimingInfo = (
+  planned: Date | null,
+  actual: Date | null,
+  estimated: Date | null,
+): StopTimingInfo => {
+  const plannedLabel = formatDisplayTime(planned);
+  const actualSource = actual ?? estimated ?? planned ?? null;
+  const actualLabel = formatDisplayTime(actualSource);
+  const hasDelay = Boolean(planned && actualSource && actualSource.getTime() > planned.getTime());
+  return { plannedLabel, actualLabel, hasDelay };
 };
 
 const formatEtaLabel = (stop: RenderableStop) => {
@@ -192,6 +209,16 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
         stop.arrivalEstimated ??
         plannedTime ??
         null;
+      const arrivalTiming = buildTimingInfo(
+        stop.arrivalAdvertised,
+        stop.arrivalActual,
+        stop.arrivalEstimated,
+      );
+      const departureTiming = buildTimingInfo(
+        stop.departureAdvertised,
+        stop.departureActual,
+        stop.departureEstimated,
+      );
       const timestamp = primaryTimestamp ? primaryTimestamp.getTime() : null;
       const etaMinutes = timestamp ? (timestamp - now) / 60000 : null;
       const completed = stop.departureActual
@@ -204,18 +231,7 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
         state = 'current';
         currentAssigned = true;
       }
-      const plannedLabel = formatDisplayTime(plannedTime);
       const reportedLabel = formatDisplayTime(primaryTimestamp);
-      const hasDeviation =
-        plannedLabel !== '—' &&
-        reportedLabel !== '—' &&
-        Boolean(
-          (stop.departureActual ??
-            stop.arrivalActual ??
-            stop.departureEstimated ??
-            stop.arrivalEstimated) &&
-            plannedLabel !== reportedLabel,
-        );
 
       return {
         ...stop,
@@ -223,9 +239,8 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
         displayTime: reportedLabel,
         timestamp,
         state,
-        plannedLabel,
-        reportedLabel,
-        hasDeviation,
+        arrivalTiming,
+        departureTiming,
       };
     });
 
@@ -235,6 +250,11 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
 
     return enriched;
   }, [data?.stops, now]);
+
+  const shouldShowActual = useCallback(
+    (timing: StopTimingInfo) => timing.actualLabel !== '—',
+    [],
+  );
 
   const railSleeperCount = useMemo(() => {
     if (!stops.length) {
@@ -441,10 +461,44 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
                     </View>
 
                     <View style={styles.stopTiming}>
-                      <Text style={styles.timePlanned}>{stop.plannedLabel}</Text>
-                      <Text style={[styles.timeActual, stop.hasDeviation && { color: accent }]}>
-                        {stop.reportedLabel}
-                      </Text>
+                      <View style={styles.timeStack}>
+                        <View style={styles.timeRow}>
+                          {stop.arrivalTiming.hasDelay &&
+                          stop.arrivalTiming.plannedLabel !== '—' ? (
+                            <Text style={[styles.timePlanned, styles.timePlannedDelayed]}>
+                              {stop.arrivalTiming.plannedLabel}
+                            </Text>
+                          ) : null}
+                          {shouldShowActual(stop.arrivalTiming) ? (
+                            <Text
+                              style={[
+                                styles.timeActual,
+                                stop.arrivalTiming.hasDelay && styles.timeActualDelayed,
+                              ]}
+                            >
+                              {stop.arrivalTiming.actualLabel}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <View style={styles.timeRow}>
+                          {stop.departureTiming.hasDelay &&
+                          stop.departureTiming.plannedLabel !== '—' ? (
+                            <Text style={[styles.timePlanned, styles.timePlannedDelayed]}>
+                              {stop.departureTiming.plannedLabel}
+                            </Text>
+                          ) : null}
+                          {shouldShowActual(stop.departureTiming) ? (
+                            <Text
+                              style={[
+                                styles.timeActual,
+                                stop.departureTiming.hasDelay && styles.timeActualDelayed,
+                              ]}
+                            >
+                              {stop.departureTiming.actualLabel}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
                     </View>
                   </View>
                 );
@@ -732,19 +786,36 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   stopTiming: {
-    width: 82,
+    minWidth: 160,
     alignItems: 'flex-end',
-    justifyContent: 'center',
-    gap: 2,
+  },
+  timeStack: {
+    gap: 8,
+    alignItems: 'flex-end',
+  },
+  timeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    justifyContent: 'flex-end',
   },
   timePlanned: {
     color: 'rgba(255,255,255,0.5)',
-    fontSize: 13,
+    fontSize: 12,
+    textAlign: 'right',
+  },
+  timePlannedDelayed: {
+    color: 'rgba(255,255,255,0.4)',
+    textDecorationLine: 'line-through',
   },
   timeActual: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
+    textAlign: 'right',
+  },
+  timeActualDelayed: {
+    color: '#ff5e5e',
   },
   emptyState: {
     borderRadius: 18,
