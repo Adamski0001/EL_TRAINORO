@@ -39,6 +39,12 @@ const SWEDEN_REGION = {
 };
 
 const RAIL_TILE_URL = 'https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png';
+const TRAINAR_HEADER_HEIGHT = 210;
+const TRAINAR_LOGO_WIDTH = 530;
+const TRAINAR_LOGO_HEIGHT = 185;
+const TRAINAR_LOGO_VERTICAL_OFFSET = -60;
+const SEARCH_BAR_HEIGHT = 52;
+const SEARCH_PANEL_TOP_OFFSET = TRAINAR_HEADER_HEIGHT - 135 - SEARCH_BAR_HEIGHT * 0.7;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -160,6 +166,7 @@ function AppContent() {
           />
           <SearchPanel
             visible={activeNav === 'search'}
+            topOffset={SEARCH_PANEL_TOP_OFFSET}
             onSelectTrain={handleSearchSelectTrain}
             onRequestClose={() => {
               setPrimaryNav('home');
@@ -278,22 +285,26 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    height: 210,
+    height: TRAINAR_HEADER_HEIGHT,
     alignItems: 'center',
     justifyContent: 'flex-start',
     zIndex: 20,
   },
   headerLogo: {
-    width: 530,
-    height: 185,
-    marginTop: -60,
+    width: '100%',
+    height: '100%',
   },
   headerLogoDisabled: {
     opacity: 0.7,
   },
   logoButton: {
+    width: TRAINAR_LOGO_WIDTH,
+    height: TRAINAR_LOGO_HEIGHT,
+    marginTop: TRAINAR_LOGO_VERTICAL_OFFSET,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+    borderRadius: TRAINAR_LOGO_HEIGHT / 6,
   },
   logoButtonPressed: {
     opacity: 0.85,

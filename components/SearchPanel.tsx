@@ -1,6 +1,6 @@
 import { BlurView } from 'expo-blur';
 import { Search as SearchIcon, TrainFront, Map as RouteIcon } from 'lucide-react-native';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Dimensions, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
@@ -20,14 +20,16 @@ type SearchPanelProps = {
   visible: boolean;
   onSelectTrain: (train: TrainPosition) => void;
   onRequestClose: () => void;
+  topOffset?: number;
 };
 
-export function SearchPanel({ visible, onSelectTrain, onRequestClose }: SearchPanelProps) {
+export function SearchPanel({ visible, onSelectTrain, onRequestClose, topOffset = 0 }: SearchPanelProps) {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const translateX = useSharedValue(SCREEN_WIDTH);
   const opacity = useSharedValue(0);
   const { items } = useTrainSearchIndex();
+  const inputRef = useRef<TextInput | null>(null);
 
   useEffect(() => {
     const shouldReset = !visible;
@@ -49,6 +51,18 @@ export function SearchPanel({ visible, onSelectTrain, onRequestClose }: SearchPa
     transform: [{ translateX: translateX.value }],
     opacity: opacity.value,
   }));
+
+  useEffect(() => {
+    if (visible) {
+      const timer = setTimeout(() => {
+        inputRef.current?.focus();
+      }, 120);
+      return () => {
+        clearTimeout(timer);
+      };
+    }
+    inputRef.current?.blur();
+  }, [visible]);
 
   const suggestions = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -77,16 +91,13 @@ export function SearchPanel({ visible, onSelectTrain, onRequestClose }: SearchPa
   return (
     <Animated.View
       pointerEvents={visible ? 'auto' : 'none'}
-      style={[
-        styles.root,
-        { paddingTop: insets.top + 12 },
-        animatedStyle,
-      ]}
+      style={[styles.root, { paddingTop: insets.top + 12 + topOffset }, animatedStyle]}
     >
       <View style={styles.searchWrapper}>
         <BlurView intensity={70} tint="dark" style={styles.searchBar}>
           <SearchIcon size={18} color="rgba(255,255,255,0.85)" strokeWidth={2.6} />
           <TextInput
+            ref={inputRef}
             style={styles.input}
             placeholder="Sök tågnummer eller linje"
             placeholderTextColor="rgba(255,255,255,0.6)"
@@ -136,6 +147,7 @@ const styles = StyleSheet.create({
     top: 0,
     right: 0,
     paddingHorizontal: 20,
+    zIndex: 30,
   },
   searchWrapper: {
     width: SCREEN_WIDTH - 40,
