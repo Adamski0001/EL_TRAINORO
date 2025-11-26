@@ -52,9 +52,16 @@ type RenderableStop = TrainStop & {
 const ACCENT_COLORS = ['#ffb703', '#fb8500', '#06d6a0', '#4cc9f0', '#f72585'];
 const TIMELINE_COLUMN_WIDTH = 26;
 const STOP_ROW_HORIZONTAL_PADDING = 16;
+const RAIL_TRACK_LEFT = STOP_ROW_HORIZONTAL_PADDING;
 const RAIL_LINE_WIDTH = 3;
-const RAIL_LINE_LEFT =
-  STOP_ROW_HORIZONTAL_PADDING + TIMELINE_COLUMN_WIDTH / 2 - RAIL_LINE_WIDTH / 2;
+const RAIL_TRACK_INSET = 2;
+const RAIL_TIE_HEIGHT = 4;
+const RAIL_TIE_OVERHANG = 4;
+const RAIL_SLEEPER_WIDTH =
+  TIMELINE_COLUMN_WIDTH - RAIL_TRACK_INSET * 2 + RAIL_TIE_OVERHANG * 2;
+const RAIL_SLEEPER_LEFT = RAIL_TRACK_LEFT + RAIL_TRACK_INSET - RAIL_TIE_OVERHANG;
+const RAIL_TIES_PER_GAP = 4;
+const MIN_RAIL_SLEEPERS = 20;
 
 const deriveAccentColor = (seed: string) => {
   if (!seed) {
@@ -229,6 +236,18 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
     return enriched;
   }, [data?.stops, now]);
 
+  const railSleeperCount = useMemo(() => {
+    if (!stops.length) {
+      return MIN_RAIL_SLEEPERS;
+    }
+    return Math.max((stops.length + 1) * RAIL_TIES_PER_GAP, MIN_RAIL_SLEEPERS);
+  }, [stops.length]);
+
+  const railSleeperSegments = useMemo(
+    () => Array.from({ length: railSleeperCount }, (_, index) => index),
+    [railSleeperCount],
+  );
+
   const lastStop = stops[stops.length - 1];
   const routeTitle =
     data?.fromName && data?.toName ? `${data.fromName} → ${data.toName}` : `Tåg ${train.label}`;
@@ -368,8 +387,16 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
           ) : null}
 
           {!error && stops.length > 0 ? (
-            <View style={styles.stopList}>
-              <View pointerEvents="none" style={styles.railLine} />
+            <BlurView intensity={60} tint="dark" style={styles.stopList}>
+              <View pointerEvents="none" style={styles.railLineContainer}>
+                <View style={styles.railLine} />
+                <View style={styles.railLine} />
+              </View>
+              <View pointerEvents="none" style={styles.railSleeperLayer}>
+                {railSleeperSegments.map(segment => (
+                  <View key={`sleeper-${segment}`} style={styles.railTie} />
+                ))}
+              </View>
               {stops.map((stop, index) => {
                 const trackLabel = stop.track
                   ? stop.track.trim().toLowerCase().startsWith('spår')
@@ -422,7 +449,7 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
                   </View>
                 );
               })}
-            </View>
+            </BlurView>
           ) : null}
 
           {!error && !loading && stops.length === 0 ? (
@@ -597,7 +624,7 @@ const styles = StyleSheet.create({
   },
   stopList: {
     borderRadius: 20,
-    backgroundColor: 'rgba(12,12,12,0.92)',
+    backgroundColor: 'rgba(6,12,24,0.42)',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.06)',
     overflow: 'hidden',
@@ -621,20 +648,51 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    position: 'relative',
+    zIndex: 2,
   },
   timelineConnector: {
     flex: 1,
     width: 2,
     backgroundColor: 'transparent',
   },
-  railLine: {
+  railLineContainer: {
     position: 'absolute',
     top: 0,
     bottom: 0,
-    left: RAIL_LINE_LEFT,
+    left: RAIL_TRACK_LEFT,
+    width: TIMELINE_COLUMN_WIDTH,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: RAIL_TRACK_INSET,
+    zIndex: 1,
+  },
+  railLine: {
     width: RAIL_LINE_WIDTH,
-    backgroundColor: 'rgba(255,255,255,0.25)',
+    height: '100%',
+    backgroundColor: '#b3bcc6',
     borderRadius: RAIL_LINE_WIDTH / 2,
+  },
+  railSleeperLayer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: RAIL_SLEEPER_LEFT,
+    width: RAIL_SLEEPER_WIDTH,
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    zIndex: 0,
+  },
+  railTie: {
+    height: RAIL_TIE_HEIGHT,
+    borderRadius: RAIL_TIE_HEIGHT / 2,
+    backgroundColor: '#6b4b2d',
+    width: '100%',
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
   },
   connectorHidden: {
     opacity: 0,
@@ -644,16 +702,17 @@ const styles = StyleSheet.create({
     height: 12,
     borderRadius: 6,
     borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.24)',
-    backgroundColor: 'rgba(8,8,8,1)',
+    borderColor: '#FFFFFF',
+    backgroundColor: '#FFFFFF',
+    zIndex: 3,
   },
   timelineDotCurrent: {
     backgroundColor: '#FFFFFF',
     borderColor: '#FFFFFF',
   },
   timelineDotCompleted: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: '#929aa3',
+    borderColor: '#929aa3',
   },
   stopDetails: {
     flex: 1,
