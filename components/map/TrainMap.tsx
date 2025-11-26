@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef } from 'react';
-import { StyleProp, ViewStyle } from 'react-native';
-import MapView, { Region, UrlTile } from 'react-native-maps';
+import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import MapView, { MapStyleElement, Region, UrlTile } from 'react-native-maps';
 
 import type { TrainPosition } from '../../types/trains';
 import { TrainMarkers } from '../trains/TrainMarkers';
@@ -19,6 +19,20 @@ type TrainMapProps = {
   onSelectTrain: (train: TrainPosition) => void;
   focusRequest: FocusRequest;
 };
+
+const DARK_MAP_STYLE: MapStyleElement[] = [
+  { elementType: 'geometry', stylers: [{ color: '#0a0f1f' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#929cb8' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#0a0f1f' }] },
+  { featureType: 'administrative', elementType: 'geometry', stylers: [{ color: '#1a2033' }] },
+  { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#12182b' }] },
+  { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#0f1c24' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#1d2a35' }] },
+  { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#8aa1b4' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#2c3747' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#041224' }] },
+  { featureType: 'transit', elementType: 'geometry', stylers: [{ color: '#182031' }, { visibility: 'off' }] },
+];
 
 function TrainMapComponent({
   style,
@@ -51,23 +65,28 @@ function TrainMapComponent({
   }, [focusRequest, trains]);
 
   return (
-    <MapView
-      ref={map => {
-        mapRef.current = map;
-      }}
-      style={style}
-      initialRegion={initialRegion}
-      showsCompass
-      toolbarEnabled={false}
-      moveOnMarkerPress={false}
-    >
-      <UrlTile urlTemplate={tileUrl} maximumZ={19} zIndex={2} tileSize={256} />
-      <TrainMarkers
-        trains={trains}
-        selectedTrainId={selectedTrainId}
-        onSelectTrain={onSelectTrain}
-      />
-    </MapView>
+    <View style={[styles.container, style]}>
+      <MapView
+        ref={map => {
+          mapRef.current = map;
+        }}
+        style={StyleSheet.absoluteFill}
+        initialRegion={initialRegion}
+        showsCompass
+        toolbarEnabled={false}
+        moveOnMarkerPress={false}
+        userInterfaceStyle="dark"
+        customMapStyle={DARK_MAP_STYLE}
+      >
+        <UrlTile urlTemplate={tileUrl} maximumZ={19} zIndex={2} tileSize={256} />
+        <TrainMarkers
+          trains={trains}
+          selectedTrainId={selectedTrainId}
+          onSelectTrain={onSelectTrain}
+        />
+      </MapView>
+      <View pointerEvents="none" style={styles.overlay} />
+    </View>
   );
 }
 
@@ -82,3 +101,13 @@ export const TrainMap = memo(
     prev.style === next.style &&
     prev.focusRequest === next.focusRequest,
 );
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(1, 4, 12, 0.35)',
+  },
+});
