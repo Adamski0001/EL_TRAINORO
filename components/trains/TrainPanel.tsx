@@ -454,10 +454,16 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
                           styles.stopName,
                           stop.state === 'completed' && styles.stopNameCompleted,
                         ]}
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.85}
                       >
                         {stop.stationName}
                       </Text>
-                      <Text style={styles.stopTrack}>{trackLabel}</Text>
+                      <Text style={styles.stopTrack} numberOfLines={1} ellipsizeMode="tail">
+                        {trackLabel}
+                      </Text>
                     </View>
 
                     <View style={styles.stopTiming}>
@@ -771,11 +777,14 @@ const styles = StyleSheet.create({
   stopDetails: {
     flex: 1,
     justifyContent: 'center',
+    minWidth: 0,
   },
   stopName: {
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
+    flexShrink: 1,
+    minWidth: 0,
   },
   stopNameCompleted: {
     color: 'rgba(255,255,255,0.7)',
@@ -784,10 +793,12 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.55)',
     fontSize: 12,
     marginTop: 2,
+    flexShrink: 1,
   },
   stopTiming: {
-    minWidth: 160,
+    minWidth: 140,
     alignItems: 'flex-end',
+    flexShrink: 0,
   },
   timeStack: {
     gap: 8,

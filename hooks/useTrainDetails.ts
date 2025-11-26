@@ -139,16 +139,30 @@ const buildStops = (announcements: TrainAnnouncementApiEntry[], lookup: StationL
     }
   });
 
-  return stopsInOrder
-    .sort((a, b) => {
-      const aKey = selectArrivalTimestamp(a);
-      const bKey = selectArrivalTimestamp(b);
-      if (aKey !== bKey) {
-        return aKey - bKey;
-      }
-      return a.order - b.order;
-    })
-    .map(({ order, hasArrival, hasDeparture, ...rest }) => rest);
+  const sortedStops = stopsInOrder.sort((a, b) => {
+    const aKey = selectArrivalTimestamp(a);
+    const bKey = selectArrivalTimestamp(b);
+    if (aKey !== bKey) {
+      return aKey - bKey;
+    }
+    return a.order - b.order;
+  });
+
+  const firstActiveIndex = sortedStops.findIndex(stop => !stop.canceled);
+  let lastActiveIndex = -1;
+  for (let i = sortedStops.length - 1; i >= 0; i -= 1) {
+    if (!sortedStops[i].canceled) {
+      lastActiveIndex = i;
+      break;
+    }
+  }
+
+  const trimmedStops =
+    firstActiveIndex !== -1 && lastActiveIndex !== -1
+      ? sortedStops.slice(firstActiveIndex, lastActiveIndex + 1)
+      : sortedStops;
+
+  return trimmedStops.map(({ order, hasArrival, hasDeparture, ...rest }) => rest);
 };
 
 const resolveEndpointName = (
