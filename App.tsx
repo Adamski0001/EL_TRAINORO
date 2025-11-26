@@ -1,9 +1,10 @@
 import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useCallback, useEffect, useState } from 'react';
-import { Platform, StyleSheet, View } from 'react-native';
+import { DevSettings, Image, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -12,7 +13,6 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { BottomNav, NavKey } from './components/BottomNav';
-import { ReloadButton } from './components/ReloadButton';
 import { TrainMapContainer } from './components/map/TrainMapContainer';
 import { SearchPanel } from './components/SearchPanel';
 import { TrainPanelContainer } from './components/trains/TrainPanelContainer';
@@ -20,10 +20,12 @@ import {
   TrafficInfoSheet,
   TrafficSheetSnapPoint,
 } from './components/traffic/TrafficInfoSheet';
-import { ReloadProvider } from './contexts/ReloadContext';
+import { ReloadProvider, useReloadApp } from './contexts/ReloadContext';
 import { useFrameRateLogger } from './hooks/useFrameRateLogger';
 import { useNotificationPermission } from './hooks/useNotificationPermission';
 import type { TrainPosition } from './types/trains';
+
+const trainarLogo = require('./assets/images/trainar-logo.png');
 type PrimaryNavKey = Exclude<NavKey, 'traffic'>;
 
 const PERF_LOGGING_ENABLED =
@@ -147,6 +149,7 @@ function AppContent() {
       <SafeAreaProvider style={styles.safeArea}>
         <View style={styles.container}>
           <StatusBar style="light" />
+          <TrainarHeader />
           <TrainMapContainer
             style={styles.map}
             initialRegion={SWEDEN_REGION}
@@ -170,7 +173,6 @@ function AppContent() {
             onSnapPointChange={setTrainSnap}
             onClose={handleTrainSheetClose}
           />
-          <ReloadButton />
           <Animated.View
             pointerEvents="box-none"
             style={[styles.bottomNavWrapper, navAnimatedStyle]}
@@ -194,6 +196,68 @@ function AppContent() {
   );
 }
 
+const TrainarHeader = () => {
+  const insets = useSafeAreaInsets();
+  const reloadApp = useReloadApp();
+  const [reloading, setReloading] = useState(false);
+
+  const handleReload = useCallback(async () => {
+    if (reloading) {
+      return;
+    }
+    setReloading(true);
+    try {
+      if (__DEV__ && Platform.OS !== 'web' && typeof DevSettings.reload === 'function') {
+        DevSettings.reload();
+        return;
+      }
+      await reloadApp();
+    } catch (error) {
+      console.warn('[TrainarHeader] Reload failed', error);
+    } finally {
+      setReloading(false);
+    }
+  }, [reloading, reloadApp]);
+
+  return (
+    <View
+      pointerEvents="box-none"
+      style={[
+        styles.headerOverlay,
+        {
+          paddingTop: Math.max(insets.top, 0),
+        },
+      ]}
+    >
+      <LinearGradient
+        pointerEvents="none"
+        colors={['rgba(4,8,18,0.95)', 'rgba(4,8,18,0.45)', 'rgba(4,8,18,0)']}
+        locations={[0, 0.65, 1]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Ladda om Trainar"
+        onPress={handleReload}
+        disabled={reloading}
+        style={({ pressed }) => [
+          styles.logoButton,
+          pressed && styles.logoButtonPressed,
+          reloading && styles.logoButtonDisabled,
+        ]}
+      >
+        <Image
+          source={trainarLogo}
+          style={[styles.headerLogo, reloading && styles.headerLogoDisabled]}
+          resizeMode="contain"
+        />
+      </Pressable>
+    </View>
+  );
+};
+
 const styles = StyleSheet.create({
   flex: {
     flex: 1,
@@ -208,6 +272,35 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
+  },
+  headerOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 210,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    zIndex: 20,
+  },
+  headerLogo: {
+    width: 530,
+    height: 185,
+    marginTop: -60,
+  },
+  headerLogoDisabled: {
+    opacity: 0.7,
+  },
+  logoButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoButtonPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.99 }],
+  },
+  logoButtonDisabled: {
+    opacity: 0.75,
   },
   bottomNavWrapper: {
     position: 'absolute',
