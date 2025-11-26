@@ -50,6 +50,11 @@ type RenderableStop = TrainStop & {
 };
 
 const ACCENT_COLORS = ['#ffb703', '#fb8500', '#06d6a0', '#4cc9f0', '#f72585'];
+const TIMELINE_COLUMN_WIDTH = 26;
+const STOP_ROW_HORIZONTAL_PADDING = 16;
+const RAIL_LINE_WIDTH = 3;
+const RAIL_LINE_LEFT =
+  STOP_ROW_HORIZONTAL_PADDING + TIMELINE_COLUMN_WIDTH / 2 - RAIL_LINE_WIDTH / 2;
 
 const deriveAccentColor = (seed: string) => {
   if (!seed) {
@@ -364,6 +369,7 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
 
           {!error && stops.length > 0 ? (
             <View style={styles.stopList}>
+              <View pointerEvents="none" style={styles.railLine} />
               {stops.map((stop, index) => {
                 const trackLabel = stop.track
                   ? stop.track.trim().toLowerCase().startsWith('spår')
@@ -595,20 +601,23 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.06)',
     overflow: 'hidden',
+    position: 'relative',
   },
   stopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: STOP_ROW_HORIZONTAL_PADDING,
     paddingVertical: 12,
     gap: 12,
+    position: 'relative',
+    zIndex: 1,
   },
   stopRowDivider: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(255,255,255,0.08)',
   },
   timelineColumn: {
-    width: 26,
+    width: TIMELINE_COLUMN_WIDTH,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
@@ -616,7 +625,16 @@ const styles = StyleSheet.create({
   timelineConnector: {
     flex: 1,
     width: 2,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'transparent',
+  },
+  railLine: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: RAIL_LINE_LEFT,
+    width: RAIL_LINE_WIDTH,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    borderRadius: RAIL_LINE_WIDTH / 2,
   },
   connectorHidden: {
     opacity: 0,
