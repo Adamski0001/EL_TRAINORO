@@ -1,3 +1,5 @@
+require('./scripts/registerEnv');
+
 module.exports = function (api) {
   api.cache(true);
   return {

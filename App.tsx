@@ -40,11 +40,10 @@ const RAIL_TILE_URL = 'https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: false,
-    shouldSetBadge: false,
     shouldShowBanner: true,
     shouldShowList: true,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
   }),
 });
 

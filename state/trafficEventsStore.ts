@@ -294,6 +294,7 @@ const normalizeEvents = (
       id: draft.id,
       title,
       description: draft.description,
+      reasonDescription: draft.description,
       severity,
       impactLabel: draft.impactLabel ?? impactLabelFromScore(draft.severityScore) ?? null,
       segment,

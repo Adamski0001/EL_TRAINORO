@@ -72,6 +72,64 @@ const severityStyles: Record<TrafficEvent['severity'], { dot: string; chip: stri
   },
 };
 
+const SEVERITY_PRIORITY: Record<TrafficEvent['severity'], number> = {
+  low: 0.35,
+  medium: 0.55,
+  high: 0.75,
+  critical: 1,
+};
+
+const IMPACT_PRIORITY: Record<string, number> = {
+  'mycket stor påverkan': 1,
+  'stor påverkan': 0.85,
+  'måttlig påverkan': 0.65,
+  'liten påverkan': 0.45,
+};
+
+const MAX_DISTANCE_PRIORITY_KM = 200;
+const DEFAULT_DISTANCE_PRIORITY = 0.4;
+const PRIORITY_WEIGHTS = {
+  severity: 0.55,
+  impact: 0.25,
+  distance: 0.2,
+};
+
+const normalizeImpactLabel = (label: string | null | undefined) => label?.trim().toLowerCase() ?? null;
+
+const computeImpactPriority = (impactLabel: string | null | undefined, severityScore: number) => {
+  const normalized = normalizeImpactLabel(impactLabel);
+  if (normalized && normalized in IMPACT_PRIORITY) {
+    return IMPACT_PRIORITY[normalized];
+  }
+  return severityScore;
+};
+
+const computeDistancePriority = (distanceKm: number | null | undefined) => {
+  if (typeof distanceKm !== 'number' || Number.isNaN(distanceKm)) {
+    return DEFAULT_DISTANCE_PRIORITY;
+  }
+  const clamped = Math.min(Math.max(distanceKm, 0), MAX_DISTANCE_PRIORITY_KM);
+  return 1 - clamped / MAX_DISTANCE_PRIORITY_KM;
+};
+
+const computePriorityScore = (event: TrafficEvent, distanceKm: number | null | undefined) => {
+  const severityScore = SEVERITY_PRIORITY[event.severity] ?? 0.5;
+  const impactScore = computeImpactPriority(event.impactLabel, severityScore);
+  const distanceScore = computeDistancePriority(distanceKm);
+  return (
+    severityScore * PRIORITY_WEIGHTS.severity +
+    impactScore * PRIORITY_WEIGHTS.impact +
+    distanceScore * PRIORITY_WEIGHTS.distance
+  );
+};
+
+const SEVERITY_LABELS: Record<TrafficEvent['severity'], string> = {
+  low: 'Liten påverkan',
+  medium: 'Måttlig påverkan',
+  high: 'Stor påverkan',
+  critical: 'Mycket stor påverkan',
+};
+
 const formatClockTime = (value: string | Date | null) => {
   if (!value) {
     return null;
@@ -116,6 +174,7 @@ export function TrafficInfoSheet({
   const translateY = useSharedValue(SHEET_SNAP_POINTS.hidden);
   const startY = useSharedValue(SHEET_SNAP_POINTS.hidden);
   const [currentSnap, setCurrentSnap] = useState<TrafficSheetSnapPoint>('hidden');
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const onCloseRef = useRef(onClose);
   const onSnapPointChangeRef = useRef(onSnapPointChange);
   const { events, loading, error, lastUpdated, refetch } = useTrafficEvents();
@@ -128,7 +187,12 @@ export function TrafficInfoSheet({
     loading: requestingLocation,
     error: locationError,
   } = useUserLocation({ active: visible });
-  const eventSummaries = useTrafficEventSummaries(events);
+  const {
+    summaries: eventSummaries,
+    loadingMap: summaryLoadingMap,
+    errorMap: summaryErrorMap,
+    ensureSummary,
+  } = useTrafficEventSummaries();
   useTrafficAlerts({
     events,
     userCoords,
@@ -143,6 +207,15 @@ export function TrafficInfoSheet({
   useEffect(() => {
     onSnapPointChangeRef.current = onSnapPointChange;
   }, [onSnapPointChange]);
+
+  useEffect(() => {
+    if (!visible || !events?.length) {
+      return;
+    }
+    events.slice(0, 3).forEach(event => {
+      void ensureSummary(event);
+    });
+  }, [visible, events, ensureSummary]);
 
   useEffect(() => {
     if (!visible) {
@@ -250,31 +323,28 @@ export function TrafficInfoSheet({
   }, [events.length, lastUpdated, loading]);
 
   const { sortedEvents, distanceMap } = useMemo(() => {
-    if (!userCoords) {
+    const enriched = events.map((event, index) => {
+      const distance = userCoords ? computeEventDistance(event, userCoords) : null;
       return {
-        sortedEvents: events,
-        distanceMap: new Map<string, number | null>(),
+        event,
+        index,
+        distance,
+        priority: computePriorityScore(event, distance),
       };
-    }
-    const enriched = events.map((event, index) => ({
-      event,
-      index,
-      distance: computeEventDistance(event, userCoords),
-    }));
+    });
     enriched.sort((a, b) => {
-      const aDistance = typeof a.distance === 'number' ? a.distance : null;
-      const bDistance = typeof b.distance === 'number' ? b.distance : null;
-      if (aDistance !== null && bDistance !== null) {
-        if (aDistance !== bDistance) {
-          return aDistance - bDistance;
-        }
-        return a.index - b.index;
+      if (b.priority !== a.priority) {
+        return b.priority - a.priority;
       }
-      if (aDistance !== null) {
-        return -1;
+      const severityDiff =
+        (SEVERITY_PRIORITY[b.event.severity] ?? 0) - (SEVERITY_PRIORITY[a.event.severity] ?? 0);
+      if (severityDiff !== 0) {
+        return severityDiff > 0 ? 1 : -1;
       }
-      if (bDistance !== null) {
-        return 1;
+      const aDistance = typeof a.distance === 'number' ? a.distance : Number.POSITIVE_INFINITY;
+      const bDistance = typeof b.distance === 'number' ? b.distance : Number.POSITIVE_INFINITY;
+      if (aDistance !== bDistance) {
+        return aDistance - bDistance;
       }
       return a.index - b.index;
     });
@@ -353,6 +423,14 @@ export function TrafficInfoSheet({
     [loading],
   );
 
+  const handleToggleEvent = useCallback(
+    (event: TrafficEvent) => {
+      setExpandedEventId(current => (current === event.id ? null : event.id));
+      void ensureSummary(event);
+    },
+    [ensureSummary],
+  );
+
   const renderEvent = useCallback(
     ({ item }: { item: TrafficEvent }) => {
       const severityTheme = severityStyles[item.severity];
@@ -361,42 +439,119 @@ export function TrafficInfoSheet({
       const distanceValue = distanceMap.get(item.id);
       const distanceLabel = typeof distanceValue === 'number' ? formatDistanceLabel(distanceValue) : null;
       const aiSummary = eventSummaries[item.id];
+      const isExpanded = expandedEventId === item.id;
+      const hasDescription = item.description && item.description.trim().length > 0;
+      const fallbackAdvice = hasDescription ? item.description : 'Kontrollera din avgång för senaste information.';
+      const previewText =
+        item.description?.trim() || item.reasonDescription?.trim() || 'Ingen beskrivning tillgänglig.';
+      const impactText = item.impactLabel?.trim() || SEVERITY_LABELS[item.severity] || 'Okänd påverkan';
+      const loadingSummary = Boolean(summaryLoadingMap[item.id]);
+      const summaryError = summaryErrorMap[item.id];
+      const isAiGenerated = Boolean(aiSummary?.aiGenerated);
+      const summarySourceLabel = summaryError ? 'Fel' : isAiGenerated ? 'AI-genererad' : 'Systemtext';
+      const summarySourceStyle = summaryError
+        ? styles.aiSummarySourceError
+        : isAiGenerated
+          ? styles.aiSummarySourceAi
+          : styles.aiSummarySourceFallback;
       return (
-        <View style={styles.incidentCard}>
-          <View style={styles.incidentHeader}>
-            <View style={styles.titleRow}>
-              <View style={[styles.severityDot, { backgroundColor: severityTheme.dot }]} />
-              <Text style={styles.incidentTitle}>{item.title}</Text>
+        <Pressable onPress={() => handleToggleEvent(item)} style={styles.cardPressable}>
+          <View style={styles.incidentCard}>
+            <View style={styles.incidentHeader}>
+              <View style={styles.titleRow}>
+                <View style={[styles.severityDot, { backgroundColor: severityTheme.dot }]} />
+                <Text style={styles.incidentTitle}>{item.title}</Text>
+              </View>
+              {updatedLabel ? <Text style={styles.incidentTime}>{updatedLabel}</Text> : null}
             </View>
-            {updatedLabel ? <Text style={styles.incidentTime}>{updatedLabel}</Text> : null}
-          </View>
-          {item.segment ? <Text style={styles.incidentSegment}>{item.segment}</Text> : null}
-          {item.description ? <Text style={styles.incidentDetail}>{item.description}</Text> : null}
-          {aiSummary ? (
-            <View style={styles.aiSummaryCard}>
-              <Text style={styles.aiSummaryLabel}>AI-sammanfattning</Text>
-              <Text style={styles.aiSummaryText}>{aiSummary.summary}</Text>
-              {aiSummary.advice ? <Text style={styles.aiSummaryAdvice}>{aiSummary.advice}</Text> : null}
-            </View>
-          ) : null}
-          <View style={styles.metaRow}>
-            <View style={styles.metaLeft}>
-              <View style={[styles.severityChip, { backgroundColor: severityTheme.chip }]}>
-                <Text style={[styles.severityChipText, { color: severityTheme.text }]}>
-                  {item.impactLabel ?? item.severity.toUpperCase()}
+            {item.segment ? <Text style={styles.incidentSegment}>{item.segment}</Text> : null}
+            <Text numberOfLines={isExpanded ? undefined : 2} style={styles.summaryPreview}>
+              {previewText}
+            </Text>
+            <View style={styles.metaRow}>
+              <View style={styles.metaLeft}>
+                <View style={[styles.severityChip, { backgroundColor: severityTheme.chip }]}>
+                  <Text style={[styles.severityChipText, { color: severityTheme.text }]}>{impactText}</Text>
+                </View>
+                <Text style={styles.metaText}>
+                  {startLabel ? `Start ${startLabel}` : 'Start okänd'}
+                  {item.endTime ? ` · Slut ${formatClockTime(item.endTime)}` : ''}
                 </Text>
               </View>
-              <Text style={styles.metaText}>
-                {startLabel ? `Start ${startLabel}` : 'Start okänd'}
-                {item.endTime ? ` · Slut ${formatClockTime(item.endTime)}` : ''}
-              </Text>
+              {distanceLabel ? <Text style={styles.distanceText}>{distanceLabel}</Text> : null}
             </View>
-            {distanceLabel ? <Text style={styles.distanceText}>{distanceLabel}</Text> : null}
+            {isExpanded ? (
+              <View style={styles.expandedSection}>
+                {loadingSummary ? (
+                  <View style={styles.aiSummaryCard}>
+                    <View style={styles.aiSummaryHeader}>
+                      <Text style={styles.aiSummaryLabel}>AI-sammanfattning</Text>
+                      <Text style={[styles.aiSummarySource, summarySourceStyle]}>{summarySourceLabel}</Text>
+                    </View>
+                    <View style={styles.aiLoadingRow}>
+                      <ActivityIndicator color="#7dd3fc" size="small" />
+                      <Text style={styles.aiSummaryText}>Genererar sammanfattning…</Text>
+                    </View>
+                  </View>
+                ) : aiSummary ? (
+                  <View style={styles.aiSummaryCard}>
+                    <View style={styles.aiSummaryHeader}>
+                      <Text style={styles.aiSummaryLabel}>AI-sammanfattning</Text>
+                      <Text style={[styles.aiSummarySource, summarySourceStyle]}>{summarySourceLabel}</Text>
+                    </View>
+                    <Text style={styles.aiSummaryText}>{aiSummary.summary}</Text>
+                    <Text style={styles.aiSummaryAdvice}>
+                      {aiSummary.advice || fallbackAdvice || 'Följ skyltning och planera extra tid.'}
+                    </Text>
+                  </View>
+                ) : summaryError ? (
+                  <View style={styles.aiSummaryCard}>
+                    <View style={styles.aiSummaryHeader}>
+                      <Text style={styles.aiSummaryLabel}>AI-sammanfattning</Text>
+                      <Text style={[styles.aiSummarySource, summarySourceStyle]}>{summarySourceLabel}</Text>
+                    </View>
+                    <Text style={styles.aiSummaryError}>Kunde inte visa AI-svar: {summaryError}</Text>
+                    <Text style={styles.aiSummaryText}>
+                      {fallbackAdvice || 'Sammanfattningen visas igen när AI-tjänsten svarar.'}
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.aiSummaryCard}>
+                    <View style={styles.aiSummaryHeader}>
+                      <Text style={styles.aiSummaryLabel}>AI-sammanfattning</Text>
+                      <Text style={[styles.aiSummarySource, summarySourceStyle]}>{summarySourceLabel}</Text>
+                    </View>
+                    <Text style={styles.aiSummaryText}>
+                      {fallbackAdvice || 'Sammanfattning laddas… försök igen om en stund.'}
+                    </Text>
+                  </View>
+                )}
+                <View style={styles.sourceCard}>
+                  <Text style={styles.sourceLabel}>Beskrivning från Trafikverket</Text>
+                  <Text style={styles.sourceText}>{previewText}</Text>
+                </View>
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Påverkan</Text>
+                  <Text style={styles.detailValue}>{impactText}</Text>
+                </View>
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Sträcka</Text>
+                  <Text style={styles.detailValue}>{item.segment ?? 'Okänd'}</Text>
+                </View>
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Tidsfönster</Text>
+                  <Text style={styles.detailValue}>
+                    {startLabel ? `Start ${startLabel}` : 'Start okänd'}
+                    {item.endTime ? ` · Slut ${formatClockTime(item.endTime)}` : ''}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
           </View>
-        </View>
+        </Pressable>
       );
     },
-    [distanceMap, eventSummaries],
+    [distanceMap, eventSummaries, expandedEventId, handleToggleEvent],
   );
 
   const keyExtractor = useCallback((item: TrafficEvent) => item.id, []);
@@ -608,6 +763,9 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 6,
   },
+  cardPressable: {
+    width: '100%',
+  },
   incidentHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -638,6 +796,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: 'rgba(255,255,255,0.75)',
   },
+  summaryPreview: {
+    fontSize: 13,
+    color: '#e5e7eb',
+    lineHeight: 18,
+  },
   incidentDetail: {
     fontSize: 13,
     color: 'rgba(255,255,255,0.75)',
@@ -652,12 +815,32 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.08)',
     gap: 4,
   },
+  aiSummaryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   aiSummaryLabel: {
     fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.5,
     color: '#7dd3fc',
     textTransform: 'uppercase',
+  },
+  aiSummarySource: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  aiSummarySourceAi: {
+    color: '#bef264',
+  },
+  aiSummarySourceFallback: {
+    color: 'rgba(255,255,255,0.7)',
+  },
+  aiSummarySourceError: {
+    color: '#fca5a5',
   },
   aiSummaryText: {
     fontSize: 13,
@@ -666,6 +849,56 @@ const styles = StyleSheet.create({
   aiSummaryAdvice: {
     fontSize: 12,
     color: 'rgba(224, 242, 254, 0.85)',
+  },
+  aiSummaryError: {
+    fontSize: 12,
+    color: '#fca5a5',
+  },
+  sourceCard: {
+    marginTop: 8,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: 'rgba(17, 40, 68, 0.45)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    gap: 6,
+  },
+  sourceLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+    color: 'rgba(255,255,255,0.8)',
+    textTransform: 'uppercase',
+  },
+  sourceText: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.85)',
+  },
+  aiLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  expandedSection: {
+    marginTop: 8,
+    gap: 8,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  detailLabel: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.6)',
+    fontWeight: '600',
+  },
+  detailValue: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.85)',
+    textAlign: 'right',
+    flex: 1,
+    marginLeft: 12,
   },
   metaRow: {
     flexDirection: 'row',

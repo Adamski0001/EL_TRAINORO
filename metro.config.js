@@ -1,6 +1,8 @@
 const { getDefaultConfig } = require('expo/metro-config');
 const path = require('path');
 
+require('./scripts/registerEnv');
+
 const config = getDefaultConfig(__dirname);
 
 config.resolver = {

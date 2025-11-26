@@ -11,6 +11,7 @@ export type TrafficEvent = {
   id: string;
   title: string;
   description: string | null;
+  reasonDescription?: string | null;
   severity: TrafficEventSeverity;
   impactLabel: string | null;
   segment: string | null;
