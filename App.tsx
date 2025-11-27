@@ -280,6 +280,7 @@ function AppContent() {
             stationId={selectedStationId}
             onSnapPointChange={setStationSnap}
             onClose={handleStationSheetClose}
+            onOpenTrain={openTrainDetails}
           />
           <ProfilePanelContainer
             visible={profileSheetVisible}

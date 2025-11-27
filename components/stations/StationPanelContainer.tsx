@@ -3,6 +3,7 @@ import { memo, useEffect } from 'react';
 import { useStationById } from '../../hooks/useStationById';
 import type { TrafficSheetSnapPoint } from '../traffic/TrafficInfoSheet';
 import { StationPanel } from './StationPanel';
+import type { TrainPosition } from '../../types/trains';
 
 type StationPanelContainerProps = {
   stationId: string | null;
@@ -10,6 +11,7 @@ type StationPanelContainerProps = {
   initialSnap?: Exclude<TrafficSheetSnapPoint, 'hidden'>;
   onClose: () => void;
   onSnapPointChange?: (point: TrafficSheetSnapPoint) => void;
+  onOpenTrain: (train: TrainPosition) => void;
 };
 
 function StationPanelContainerComponent({
@@ -18,6 +20,7 @@ function StationPanelContainerComponent({
   initialSnap = 'half',
   onClose,
   onSnapPointChange,
+  onOpenTrain,
 }: StationPanelContainerProps) {
   const station = useStationById(stationId);
 
@@ -38,6 +41,7 @@ function StationPanelContainerComponent({
       station={station}
       onClose={onClose}
       onSnapPointChange={onSnapPointChange}
+      onOpenTrain={onOpenTrain}
     />
   );
 }
