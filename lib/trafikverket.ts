@@ -156,7 +156,10 @@ type TrainStationMetadata = {
 };
 
 export type StationLookupEntry = {
+  signature: string;
   name: string;
+  shortName: string | null;
+  officialName: string | null;
   latitude: number | null;
   longitude: number | null;
 };
@@ -186,10 +189,15 @@ const buildStationLookup = (entries: TrainStationMetadata[]): StationLookup =>
       (entry.OfficialLocationName ?? '').trim() ||
       (entry.AdvertisedShortLocationName ?? '').trim() ||
       signature;
+    const shortName = (entry.AdvertisedShortLocationName ?? '').trim() || null;
+    const officialName = (entry.OfficialLocationName ?? '').trim() || null;
     const latitude = typeof entry.Latitude === 'number' ? entry.Latitude : null;
     const longitude = typeof entry.Longitude === 'number' ? entry.Longitude : null;
     acc[signature] = {
+      signature,
       name: preferredName,
+      shortName,
+      officialName,
       latitude,
       longitude,
     };
