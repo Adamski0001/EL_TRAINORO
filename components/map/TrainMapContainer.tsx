@@ -2,18 +2,23 @@ import { memo, useCallback, useEffect, useMemo, useSyncExternalStore } from 'rea
 import type { StyleProp, ViewStyle } from 'react-native';
 import type { Region } from 'react-native-maps';
 
+import { useStations } from '../../hooks/useStations';
 import { useTrainPositions } from '../../hooks/useTrainPositions';
 import { trainRouteRegistry } from '../../state/trainRouteRegistry';
+import type { Station } from '../../types/stations';
 import type { TrainPosition } from '../../types/trains';
 import { TrainMap } from './TrainMap';
+import type { MapFocusRequest } from './TrainMap';
 
 type TrainMapContainerProps = {
   style?: StyleProp<ViewStyle>;
   initialRegion: Region;
   tileUrl: string;
   selectedTrainId: string | null;
+  selectedStationId: string | null;
   onSelectTrain: (train: TrainPosition) => void;
-  focusRequest: { trainId: string; token: number } | null;
+  onSelectStation: (station: Station) => void;
+  focusRequest: MapFocusRequest | null;
 };
 
 function TrainMapContainerComponent({
@@ -22,9 +27,12 @@ function TrainMapContainerComponent({
   tileUrl,
   selectedTrainId,
   onSelectTrain,
+  selectedStationId,
+  onSelectStation,
   focusRequest,
 }: TrainMapContainerProps) {
   const { trains } = useTrainPositions();
+  const { stations } = useStations();
   const routeSnapshot = useSyncExternalStore(
     trainRouteRegistry.subscribe,
     trainRouteRegistry.getSnapshot,
@@ -57,15 +65,18 @@ function TrainMapContainerComponent({
   );
 
   return (
-    <TrainMap
-      style={style}
-      initialRegion={initialRegion}
-      tileUrl={tileUrl}
-      trains={filteredTrains}
-      selectedTrainId={selectedTrainId}
-      onSelectTrain={handleSelect}
-      focusRequest={focusRequest}
-    />
+      <TrainMap
+        style={style}
+        initialRegion={initialRegion}
+        tileUrl={tileUrl}
+        trains={filteredTrains}
+        stations={stations}
+        selectedTrainId={selectedTrainId}
+        selectedStationId={selectedStationId}
+        onSelectTrain={handleSelect}
+        onSelectStation={onSelectStation}
+        focusRequest={focusRequest}
+      />
   );
 }
 

@@ -14,6 +14,7 @@ import Animated, {
 
 import { BottomNav, NavKey } from './components/BottomNav';
 import { TrainMapContainer } from './components/map/TrainMapContainer';
+import type { MapFocusRequest } from './components/map/TrainMap';
 import { SearchPanel } from './components/SearchPanel';
 import { TrainPanelContainer } from './components/trains/TrainPanelContainer';
 import {
@@ -21,9 +22,11 @@ import {
   TrafficSheetSnapPoint,
 } from './components/traffic/TrafficInfoSheet';
 import { ProfilePanelContainer } from './components/profile/ProfilePanelContainer';
+import { StationPanelContainer } from './components/stations/StationPanelContainer';
 import { ReloadProvider, useReloadApp } from './contexts/ReloadContext';
 import { useFrameRateLogger } from './hooks/useFrameRateLogger';
 import { useNotificationPermission } from './hooks/useNotificationPermission';
+import type { Station } from './types/stations';
 import type { TrainPosition } from './types/trains';
 
 const trainarLogo = require('./assets/images/trainar-logo.png');
@@ -74,7 +77,10 @@ function AppContent() {
   const [profileSnap, setProfileSnap] = useState<TrafficSheetSnapPoint>('hidden');
   const [primaryNav, setPrimaryNav] = useState<PrimaryNavKey>('home');
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
-  const [mapFocusRequest, setMapFocusRequest] = useState<{ trainId: string; token: number } | null>(null);
+  const [selectedStationId, setSelectedStationId] = useState<string | null>(null);
+  const [stationSheetVisible, setStationSheetVisible] = useState(false);
+  const [stationSnap, setStationSnap] = useState<TrafficSheetSnapPoint>('hidden');
+  const [mapFocusRequest, setMapFocusRequest] = useState<MapFocusRequest | null>(null);
   const navTranslateY = useSharedValue(0);
   useFrameRateLogger('root', PERF_LOGGING_ENABLED);
   const { status: notificationStatus, request: requestNotificationPermission } = useNotificationPermission();
@@ -96,21 +102,54 @@ function AppContent() {
     }
   }, []);
 
-  const openTrainDetails = useCallback((train: TrainPosition, options: { focus?: boolean } = {}) => {
-    setTrafficSheetVisible(false);
-    setTrainSnap('half');
-    setSelectedTrainId(train.id);
-    setTrainSheetVisible(true);
-    if (options.focus) {
-      setMapFocusRequest({ trainId: train.id, token: Date.now() });
-    }
-  }, []);
+  const openTrainDetails = useCallback(
+    (train: TrainPosition, options: { focus?: boolean } = {}) => {
+      setTrafficSheetVisible(false);
+      setStationSheetVisible(false);
+      setStationSnap('hidden');
+      setTrainSnap('half');
+      setSelectedStationId(null);
+      setSelectedTrainId(train.id);
+      setTrainSheetVisible(true);
+      if (options.focus) {
+        setMapFocusRequest({ type: 'train', id: train.id, token: Date.now() });
+      }
+    },
+    [],
+  );
+
+  const openStationDetails = useCallback(
+    (station: Station, options: { focus?: boolean } = {}) => {
+      setTrafficSheetVisible(false);
+      setTrainSheetVisible(false);
+      setTrainSnap('hidden');
+      setProfileSheetVisible(false);
+      setProfileSnap('hidden');
+      setPrimaryNav('home');
+      setActiveNav('home');
+      setSelectedTrainId(null);
+      setSelectedStationId(station.id);
+      setStationSnap('half');
+      setStationSheetVisible(true);
+      if (options.focus) {
+        setMapFocusRequest({ type: 'station', id: station.id, token: Date.now() });
+      }
+    },
+    [setActiveNav, setPrimaryNav, setProfileSnap, setProfileSheetVisible],
+  );
 
   const handleSelectTrain = useCallback(
     (train: TrainPosition) => {
       openTrainDetails(train);
     },
     [openTrainDetails],
+  );
+
+  const handleSelectStation = useCallback(
+    (station: Station) => {
+      openStationDetails(station);
+    },
+    [openStationDetails],
   );
 
   const handleSearchSelectTrain = useCallback(
@@ -146,11 +185,20 @@ function AppContent() {
     setSelectedTrainId(null);
   }, []);
 
+  const handleStationSheetClose = useCallback(() => {
+    setStationSheetVisible(false);
+    setStationSnap('hidden');
+    setSelectedStationId(null);
+  }, []);
+
   const handleSelectNav = (key: NavKey) => {
     if (key === 'traffic') {
       setTrainSheetVisible(false);
       setProfileSheetVisible(false);
       setProfileSnap('hidden');
+      setStationSheetVisible(false);
+      setStationSnap('hidden');
+      setSelectedStationId(null);
       setActiveNav('traffic');
       setTrafficSheetVisible(true);
       return;
@@ -160,6 +208,9 @@ function AppContent() {
       setTrainSheetVisible(false);
       setProfileSnap('half');
       setProfileSheetVisible(true);
+      setStationSheetVisible(false);
+      setStationSnap('hidden');
+      setSelectedStationId(null);
       setPrimaryNav('profile');
       setActiveNav('profile');
       return;
@@ -168,18 +219,24 @@ function AppContent() {
     setTrainSheetVisible(false);
     setProfileSheetVisible(false);
     setProfileSnap('hidden');
+    setStationSheetVisible(false);
+    setStationSnap('hidden');
+    setSelectedStationId(null);
     setPrimaryNav(key);
     setActiveNav(key);
   };
 
   useEffect(() => {
     const isSheetOpen =
-      trafficSnap !== 'hidden' || trainSnap !== 'hidden' || profileSnap !== 'hidden';
+      trafficSnap !== 'hidden' ||
+      trainSnap !== 'hidden' ||
+      profileSnap !== 'hidden' ||
+      stationSnap !== 'hidden';
     navTranslateY.value = withTiming(isSheetOpen ? 180 : 0, {
       duration: 240,
       easing: Easing.out(Easing.cubic),
     });
-  }, [navTranslateY, profileSnap, trafficSnap, trainSnap]);
+  }, [navTranslateY, profileSnap, trafficSnap, trainSnap, stationSnap]);
 
   const navAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: navTranslateY.value }],
@@ -196,7 +253,9 @@ function AppContent() {
             initialRegion={SWEDEN_REGION}
             tileUrl={RAIL_TILE_URL}
             selectedTrainId={selectedTrainId}
+            selectedStationId={selectedStationId}
             onSelectTrain={handleSelectTrain}
+            onSelectStation={handleSelectStation}
             focusRequest={mapFocusRequest}
           />
           <SearchPanel
@@ -214,6 +273,13 @@ function AppContent() {
             trainId={selectedTrainId}
             onSnapPointChange={setTrainSnap}
             onClose={handleTrainSheetClose}
+          />
+          <StationPanelContainer
+            visible={stationSheetVisible}
+            initialSnap="half"
+            stationId={selectedStationId}
+            onSnapPointChange={setStationSnap}
+            onClose={handleStationSheetClose}
           />
           <ProfilePanelContainer
             visible={profileSheetVisible}

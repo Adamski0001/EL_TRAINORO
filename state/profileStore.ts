@@ -151,7 +151,9 @@ const setupPersistQueue = () => {
   return (payload: string) => {
     queue = queue
       .then(() => AsyncStorage.setItem(STORAGE_KEY, payload))
-      .then(() => assignState({ lastSynced: new Date(), error: null }))
+      .then(() => {
+        assignState({ lastSynced: new Date(), error: null });
+      })
       .catch(error => {
         console.warn('[ProfileStore] persist failed', error);
         assignState({ error: 'Kunde inte spara dina inställningar.' });

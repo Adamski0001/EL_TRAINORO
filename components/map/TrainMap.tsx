@@ -2,22 +2,26 @@ import { memo, useEffect, useRef } from 'react';
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
 import MapView, { MapStyleElement, Region, UrlTile } from 'react-native-maps';
 
+import type { Station } from '../../types/stations';
 import type { TrainPosition } from '../../types/trains';
+import { StationMarkers } from '../stations/StationMarkers';
 import { TrainMarkers } from '../trains/TrainMarkers';
 
-type FocusRequest = {
-  trainId: string;
-  token: number;
-} | null;
+export type MapFocusRequest =
+  | { type: 'train'; id: string; token: number }
+  | { type: 'station'; id: string; token: number };
 
 type TrainMapProps = {
   style?: StyleProp<ViewStyle>;
   initialRegion: Region;
   tileUrl: string;
   trains: TrainPosition[];
+  stations: Station[];
   selectedTrainId: string | null;
+  selectedStationId: string | null;
   onSelectTrain: (train: TrainPosition) => void;
-  focusRequest: FocusRequest;
+  onSelectStation: (station: Station) => void;
+  focusRequest: MapFocusRequest | null;
 };
 
 const DARK_MAP_STYLE: MapStyleElement[] = [
@@ -39,8 +43,11 @@ function TrainMapComponent({
   initialRegion,
   tileUrl,
   trains,
+  stations,
   selectedTrainId,
+  selectedStationId,
   onSelectTrain,
+  onSelectStation,
   focusRequest,
 }: TrainMapProps) {
   const mapRef = useRef<MapView | null>(null);
@@ -49,20 +56,38 @@ function TrainMapComponent({
     if (!focusRequest) {
       return;
     }
-    const target = trains.find(train => train.id === focusRequest.trainId);
-    if (!target || !mapRef.current) {
+    if (!mapRef.current) {
       return;
     }
+
+    let targetCoordinate = null;
+
+    if (focusRequest.type === 'train') {
+      const targetTrain = trains.find(train => train.id === focusRequest.id);
+      if (targetTrain) {
+        targetCoordinate = targetTrain.coordinate;
+      }
+    } else {
+      const targetStation = stations.find(station => station.id === focusRequest.id);
+      if (targetStation?.coordinate) {
+        targetCoordinate = targetStation.coordinate;
+      }
+    }
+
+    if (!targetCoordinate) {
+      return;
+    }
+
     mapRef.current.animateToRegion(
       {
-        latitude: target.coordinate.latitude,
-        longitude: target.coordinate.longitude,
+        latitude: targetCoordinate.latitude,
+        longitude: targetCoordinate.longitude,
         latitudeDelta: 2,
         longitudeDelta: 2,
       },
       650,
     );
-  }, [focusRequest, trains]);
+  }, [focusRequest, stations, trains]);
 
   return (
     <View style={[styles.container, style]}>
@@ -79,6 +104,11 @@ function TrainMapComponent({
         customMapStyle={DARK_MAP_STYLE}
       >
         <UrlTile urlTemplate={tileUrl} maximumZ={19} zIndex={2} tileSize={256} />
+        <StationMarkers
+          stations={stations}
+          selectedStationId={selectedStationId}
+          onSelectStation={onSelectStation}
+        />
         <TrainMarkers
           trains={trains}
           selectedTrainId={selectedTrainId}
@@ -94,8 +124,11 @@ export const TrainMap = memo(
   TrainMapComponent,
   (prev, next) =>
     prev.trains === next.trains &&
+    prev.stations === next.stations &&
     prev.selectedTrainId === next.selectedTrainId &&
+    prev.selectedStationId === next.selectedStationId &&
     prev.onSelectTrain === next.onSelectTrain &&
+    prev.onSelectStation === next.onSelectStation &&
     prev.initialRegion === next.initialRegion &&
     prev.tileUrl === next.tileUrl &&
     prev.style === next.style &&
