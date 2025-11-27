@@ -24,6 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTrainDetails } from '../../hooks/useTrainDetails';
 import type { TrainPosition, TrainStop } from '../../types/trains';
 import type { TrafficSheetSnapPoint } from '../traffic/sheetSnapPoints';
+import { deriveAccentColor } from '../../lib/deriveAccentColor';
 import {
   SHEET_BOTTOM_LOCK_REGION,
   SHEET_FLICK_VELOCITY,
@@ -54,7 +55,6 @@ type RenderableStop = TrainStop & {
   departureTiming: StopTimingInfo;
 };
 
-const ACCENT_COLORS = ['#ffb703', '#fb8500', '#06d6a0', '#4cc9f0', '#f72585'];
 const TIMELINE_COLUMN_WIDTH = 26;
 const STOP_ROW_HORIZONTAL_PADDING = 16;
 const RAIL_TRACK_LEFT = STOP_ROW_HORIZONTAL_PADDING;
@@ -67,14 +67,6 @@ const RAIL_SLEEPER_WIDTH =
 const RAIL_SLEEPER_LEFT = RAIL_TRACK_LEFT + RAIL_TRACK_INSET - RAIL_TIE_OVERHANG;
 const RAIL_TIES_PER_GAP = 4;
 const MIN_RAIL_SLEEPERS = 20;
-
-const deriveAccentColor = (seed: string) => {
-  if (!seed) {
-    return ACCENT_COLORS[0];
-  }
-  const hash = Array.from(seed).reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  return ACCENT_COLORS[hash % ACCENT_COLORS.length];
-};
 
 const formatDisplayTime = (value: Date | null) => {
   if (!value) {

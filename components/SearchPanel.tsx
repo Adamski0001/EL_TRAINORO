@@ -1,7 +1,8 @@
 import { BlurView } from 'expo-blur';
-import { Search as SearchIcon, TrainFront, Map as RouteIcon } from 'lucide-react-native';
+import { Map as RouteIcon, Search as SearchIcon, Star, TrainFront } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Dimensions, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import type { GestureResponderEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   Easing,
@@ -13,6 +14,7 @@ import Animated, {
 
 import { useTrainSearchIndex } from '../hooks/useTrainSearchIndex';
 import type { TrainPosition } from '../types/trains';
+import { useUserProfile } from '../hooks/useUserProfile';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
@@ -29,7 +31,9 @@ export function SearchPanel({ visible, onSelectTrain, onRequestClose, topOffset 
   const translateX = useSharedValue(SCREEN_WIDTH);
   const opacity = useSharedValue(0);
   const { items } = useTrainSearchIndex();
+  const profile = useUserProfile();
   const inputRef = useRef<TextInput | null>(null);
+  const favoriteSet = useMemo(() => new Set(profile.favorites), [profile.favorites]);
 
   useEffect(() => {
     const shouldReset = !visible;
@@ -88,6 +92,14 @@ export function SearchPanel({ visible, onSelectTrain, onRequestClose, topOffset 
     handleSelectSuggestion(suggestions[0].train);
   }, [handleSelectSuggestion, suggestions]);
 
+  const handleToggleFavorite = useCallback(
+    (trainId: string, event: GestureResponderEvent) => {
+      event.stopPropagation();
+      profile.toggleFavoriteTrain(trainId);
+    },
+    [profile],
+  );
+
   return (
     <Animated.View
       pointerEvents={visible ? 'auto' : 'none'}
@@ -111,30 +123,45 @@ export function SearchPanel({ visible, onSelectTrain, onRequestClose, topOffset 
       </View>
       {showSuggestions && (
         <View style={styles.suggestionsList}>
-          {suggestions.map(item => (
-            <Pressable
-              key={item.id}
-              onPress={() => handleSelectSuggestion(item.train)}
-              style={({ pressed }) => [styles.suggestionPressable, pressed && styles.suggestionPressablePressed]}
-            >
-              <BlurView intensity={65} tint="dark" style={styles.suggestionCard}>
-                <View style={styles.suggestionIcon}>
-                  <TrainFront size={18} color="#fff" strokeWidth={2.4} />
-                </View>
-                <View style={styles.suggestionBody}>
-                  <Text style={styles.suggestionTitle}>{item.title}</Text>
-                  <View style={styles.routeRow}>
-                    <RouteIcon size={14} color="rgba(255,255,255,0.5)" strokeWidth={2} />
-                    <Text style={styles.suggestionRoute}>{item.routeText ?? 'Rutt saknas'}</Text>
+          {suggestions.map(item => {
+            const isFavorite = favoriteSet.has(item.id);
+            return (
+              <Pressable
+                key={item.id}
+                onPress={() => handleSelectSuggestion(item.train)}
+                style={({ pressed }) => [styles.suggestionPressable, pressed && styles.suggestionPressablePressed]}
+              >
+                <BlurView intensity={65} tint="dark" style={styles.suggestionCard}>
+                  <View style={styles.suggestionIcon}>
+                    <TrainFront size={18} color="#fff" strokeWidth={2.4} />
                   </View>
-                  <Text style={styles.suggestionStatus}>{item.subtitle ?? 'Ingen operatör tillgänglig'}</Text>
-                </View>
-                <Text style={styles.trainId}>
-                  {item.train.advertisedTrainIdent ?? item.train.operationalTrainNumber ?? item.id}
-                </Text>
-              </BlurView>
-            </Pressable>
-          ))}
+                  <View style={styles.suggestionBody}>
+                    <Text style={styles.suggestionTitle}>{item.title}</Text>
+                    <View style={styles.routeRow}>
+                      <RouteIcon size={14} color="rgba(255,255,255,0.5)" strokeWidth={2} />
+                      <Text style={styles.suggestionRoute}>{item.routeText ?? 'Rutt saknas'}</Text>
+                    </View>
+                    <Text style={styles.suggestionStatus}>{item.subtitle ?? 'Ingen operatör tillgänglig'}</Text>
+                  </View>
+                  <View style={styles.suggestionTrailing}>
+                    <Text style={styles.trainId}>
+                      {item.train.advertisedTrainIdent ?? item.train.operationalTrainNumber ?? item.id}
+                    </Text>
+                    <Pressable
+                      onPress={event => handleToggleFavorite(item.id, event)}
+                      style={({ pressed }) => [styles.favoriteButton, pressed && styles.favoriteButtonPressed]}
+                    >
+                      <Star
+                        size={18}
+                        color={isFavorite ? '#ffd564' : 'rgba(255,255,255,0.6)'}
+                        strokeWidth={2.2}
+                      />
+                    </Pressable>
+                  </View>
+                </BlurView>
+              </Pressable>
+            );
+          })}
         </View>
       )}
     </Animated.View>
@@ -230,9 +257,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: 'rgba(142, 188, 255, 0.9)',
   },
+  suggestionTrailing: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 6,
+  },
   trainId: {
     fontSize: 12,
     fontWeight: '700',
     color: 'rgba(255,255,255,0.6)',
+    textAlign: 'right',
+  },
+  favoriteButton: {
+    borderRadius: 999,
+    padding: 6,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  favoriteButtonPressed: {
+    backgroundColor: 'rgba(255,255,255,0.15)',
   },
 });

@@ -20,6 +20,7 @@ import {
   TrafficInfoSheet,
   TrafficSheetSnapPoint,
 } from './components/traffic/TrafficInfoSheet';
+import { ProfilePanelContainer } from './components/profile/ProfilePanelContainer';
 import { ReloadProvider, useReloadApp } from './contexts/ReloadContext';
 import { useFrameRateLogger } from './hooks/useFrameRateLogger';
 import { useNotificationPermission } from './hooks/useNotificationPermission';
@@ -69,6 +70,8 @@ function AppContent() {
   const [trafficSnap, setTrafficSnap] = useState<TrafficSheetSnapPoint>('hidden');
   const [trainSheetVisible, setTrainSheetVisible] = useState(false);
   const [trainSnap, setTrainSnap] = useState<TrafficSheetSnapPoint>('hidden');
+  const [profileSheetVisible, setProfileSheetVisible] = useState(false);
+  const [profileSnap, setProfileSnap] = useState<TrafficSheetSnapPoint>('hidden');
   const [primaryNav, setPrimaryNav] = useState<PrimaryNavKey>('home');
   const [selectedTrainId, setSelectedTrainId] = useState<string | null>(null);
   const [mapFocusRequest, setMapFocusRequest] = useState<{ trainId: string; token: number } | null>(null);
@@ -119,6 +122,24 @@ function AppContent() {
     [openTrainDetails],
   );
 
+  const handleOpenTrainFromProfile = useCallback(
+    (train: TrainPosition) => {
+      setProfileSheetVisible(false);
+      setProfileSnap('hidden');
+      setPrimaryNav('home');
+      setActiveNav('home');
+      openTrainDetails(train, { focus: true });
+    },
+    [openTrainDetails, setActiveNav, setPrimaryNav, setProfileSheetVisible, setProfileSnap],
+  );
+
+  const handleProfileSheetClose = useCallback(() => {
+    setProfileSheetVisible(false);
+    setProfileSnap('hidden');
+    setPrimaryNav('home');
+    setActiveNav('home');
+  }, [setActiveNav, setPrimaryNav, setProfileSheetVisible, setProfileSnap]);
+
   const handleTrainSheetClose = useCallback(() => {
     setTrainSheetVisible(false);
     setTrainSnap('hidden');
@@ -128,23 +149,37 @@ function AppContent() {
   const handleSelectNav = (key: NavKey) => {
     if (key === 'traffic') {
       setTrainSheetVisible(false);
+      setProfileSheetVisible(false);
+      setProfileSnap('hidden');
       setActiveNav('traffic');
       setTrafficSheetVisible(true);
       return;
     }
+    if (key === 'profile') {
+      setTrafficSheetVisible(false);
+      setTrainSheetVisible(false);
+      setProfileSnap('half');
+      setProfileSheetVisible(true);
+      setPrimaryNav('profile');
+      setActiveNav('profile');
+      return;
+    }
     setTrafficSheetVisible(false);
     setTrainSheetVisible(false);
+    setProfileSheetVisible(false);
+    setProfileSnap('hidden');
     setPrimaryNav(key);
     setActiveNav(key);
   };
 
   useEffect(() => {
-    const isSheetOpen = trafficSnap !== 'hidden' || trainSnap !== 'hidden';
+    const isSheetOpen =
+      trafficSnap !== 'hidden' || trainSnap !== 'hidden' || profileSnap !== 'hidden';
     navTranslateY.value = withTiming(isSheetOpen ? 180 : 0, {
       duration: 240,
       easing: Easing.out(Easing.cubic),
     });
-  }, [navTranslateY, trafficSnap, trainSnap]);
+  }, [navTranslateY, profileSnap, trafficSnap, trainSnap]);
 
   const navAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: navTranslateY.value }],
@@ -179,6 +214,13 @@ function AppContent() {
             trainId={selectedTrainId}
             onSnapPointChange={setTrainSnap}
             onClose={handleTrainSheetClose}
+          />
+          <ProfilePanelContainer
+            visible={profileSheetVisible}
+            initialSnap="half"
+            onSnapPointChange={setProfileSnap}
+            onClose={handleProfileSheetClose}
+            onOpenTrain={handleOpenTrainFromProfile}
           />
           <Animated.View
             pointerEvents="box-none"
