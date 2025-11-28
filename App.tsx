@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -44,6 +45,7 @@ const SWEDEN_REGION = {
 };
 
 const RAIL_TILE_URL = 'https://tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png';
+const ONBOARDING_STORAGE_KEY = 'trainar.onboarding.v1';
 const TRAINAR_HEADER_HEIGHT = 210;
 const TRAINAR_LOGO_WIDTH = 530;
 const TRAINAR_LOGO_HEIGHT = 185;
@@ -71,6 +73,7 @@ export default function App() {
 function AppContent() {
   const [activeNav, setActiveNav] = useState<NavKey>('home');
   const [onboardingComplete, setOnboardingComplete] = useState(false);
+  const [onboardingLoading, setOnboardingLoading] = useState(true);
   const [trafficSheetVisible, setTrafficSheetVisible] = useState(false);
   const [trafficSnap, setTrafficSnap] = useState<TrafficSheetSnapPoint>('hidden');
   const [trainSheetVisible, setTrainSheetVisible] = useState(false);
@@ -103,6 +106,37 @@ function AppContent() {
         lightColor: '#FF231F7C',
       }).catch(error => console.warn('[Notifications] channel error', error));
     }
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadOnboardingState = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(ONBOARDING_STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored) as {
+            completed?: boolean;
+            answers?: OnboardingAnswers | null;
+          };
+          if (parsed?.completed) {
+            onboardingContextRef.current = parsed.answers ?? null;
+            if (isMounted) {
+              setOnboardingComplete(true);
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('[Onboarding] Failed to load saved state', error);
+      } finally {
+        if (isMounted) {
+          setOnboardingLoading(false);
+        }
+      }
+    };
+    void loadOnboardingState();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const openTrainDetails = useCallback(
@@ -254,15 +288,17 @@ function AppContent() {
     transform: [{ translateY: navTranslateY.value }],
   }));
 
-  const handleOnboardingComplete = useCallback(
-    (answers?: OnboardingAnswers) => {
-      if (answers) {
-        onboardingContextRef.current = answers;
-      }
-      setOnboardingComplete(true);
-    },
-    [setOnboardingComplete],
-  );
+  const handleOnboardingComplete = useCallback((answers?: OnboardingAnswers) => {
+    const nextAnswers = answers ?? onboardingContextRef.current ?? null;
+    if (answers) {
+      onboardingContextRef.current = answers;
+    }
+    setOnboardingComplete(true);
+    AsyncStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({ completed: true, answers: nextAnswers }),
+    ).catch(error => console.warn('[Onboarding] Failed to persist state', error));
+  }, []);
 
   return (
     <GestureHandlerRootView style={styles.flex}>
@@ -329,7 +365,9 @@ function AppContent() {
               setActiveNav(primaryNav);
             }}
           />
-          {!onboardingComplete && <OnboardingOverlay onComplete={handleOnboardingComplete} />}
+          {!onboardingLoading && !onboardingComplete && (
+            <OnboardingOverlay onComplete={handleOnboardingComplete} />
+          )}
         </View>
       </SafeAreaProvider>
     </GestureHandlerRootView>

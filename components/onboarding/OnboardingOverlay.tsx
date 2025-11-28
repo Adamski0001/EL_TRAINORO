@@ -17,6 +17,9 @@ const LETTER_INTERVAL_MS = 90;
 const INTRO_HOLD_DURATION_MS = 5000;
 const BLUR_DURATION_MS = 700;
 const WHITEOUT_DURATION_MS = 1500;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LENGTH = 6;
+const MIN_LOGIN_PASSWORD_LENGTH = 6;
 
 const QUESTIONS = [
   { key: 'name', label: "What's your name?", placeholder: 'Name' },
@@ -48,25 +51,31 @@ export type OnboardingAnswers = Record<QuestionKey, string>;
 
 type Props = {
   onComplete: (answers?: OnboardingAnswers) => void;
+  initialAnswers?: Partial<OnboardingAnswers>;
 };
 
-export const OnboardingOverlay = ({ onComplete }: Props) => {
-  const [stage, setStage] = useState<Stage>('typing');
-  const [answers, setAnswers] = useState<OnboardingAnswers>(() =>
-    QUESTIONS.reduce(
-      (acc, question) => ({
-        ...acc,
-        [question.key]: '',
-      }),
-      {} as OnboardingAnswers,
-    ),
+const createInitialAnswers = (initial?: Partial<OnboardingAnswers>): OnboardingAnswers =>
+  QUESTIONS.reduce(
+    (acc, question) => ({
+      ...acc,
+      [question.key]: initial?.[question.key] ?? '',
+    }),
+    {} as OnboardingAnswers,
   );
+
+export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
+  const [stage, setStage] = useState<Stage>('typing');
+  const [answers, setAnswers] = useState<OnboardingAnswers>(() => createInitialAnswers(initialAnswers));
   const [typedText, setTypedText] = useState('');
   const welcomeOpacity = useRef(new Animated.Value(1)).current;
   const overlayOpacity = useRef(new Animated.Value(1)).current;
   const stageOpacity = useRef(new Animated.Value(1)).current;
   const hasCompletedRef = useRef(false);
-  const [accountForm, setAccountForm] = useState({ name: '', email: '', password: '' });
+  const [accountForm, setAccountForm] = useState({
+    name: initialAnswers?.name ?? '',
+    email: '',
+    password: '',
+  });
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
   const [forgotPasswordNotice, setForgotPasswordNotice] = useState<string | null>(null);
   const stageView = useMemo<StageView>(() => {
@@ -193,6 +202,9 @@ export const OnboardingOverlay = ({ onComplete }: Props) => {
   };
 
   const handleGoToQuestions = () => {
+    if (!accountFormReady) {
+      return;
+    }
     setAnswers(prev => ({
       ...prev,
       name: prev.name || accountForm.name,
@@ -201,26 +213,44 @@ export const OnboardingOverlay = ({ onComplete }: Props) => {
   };
 
   const handleForgotPassword = () => {
-    if (!loginForm.email.trim()) {
+    const trimmedEmail = loginForm.email.trim();
+    if (!trimmedEmail) {
       setForgotPasswordNotice('Enter your email to reset your password.');
       return;
     }
-    setForgotPasswordNotice(`Password reset link sent to ${loginForm.email.trim()}.`);
+    if (!EMAIL_REGEX.test(trimmedEmail)) {
+      setForgotPasswordNotice('Enter a valid email address to reset your password.');
+      return;
+    }
+    setForgotPasswordNotice(`Password reset link sent to ${trimmedEmail}.`);
   };
 
   const handleLogin = () => {
-    if (!loginForm.email.trim() || !loginForm.password.trim()) {
+    if (!loginFormReady) {
       return;
     }
     completeWithFade();
   };
 
+  const accountEmailInvalid =
+    accountForm.email.trim().length > 0 && !EMAIL_REGEX.test(accountForm.email.trim());
+  const accountPasswordInvalid =
+    accountForm.password.length > 0 && accountForm.password.length < MIN_PASSWORD_LENGTH;
+  const loginEmailInvalid =
+    loginForm.email.trim().length > 0 && !EMAIL_REGEX.test(loginForm.email.trim());
+  const loginPasswordInvalid =
+    loginForm.password.length > 0 && loginForm.password.length < MIN_LOGIN_PASSWORD_LENGTH;
   const accountFormReady =
     accountForm.name.trim().length > 0 &&
     accountForm.email.trim().length > 0 &&
-    accountForm.password.trim().length >= 6;
+    accountForm.password.trim().length >= MIN_PASSWORD_LENGTH &&
+    !accountEmailInvalid &&
+    !accountPasswordInvalid;
   const loginFormReady =
-    loginForm.email.trim().length > 0 && loginForm.password.trim().length > 0;
+    loginForm.email.trim().length > 0 &&
+    loginForm.password.trim().length > 0 &&
+    !loginEmailInvalid &&
+    !loginPasswordInvalid;
   const isFormStage =
     displayStageView === 'createAccount' ||
     displayStageView === 'login' ||
@@ -301,6 +331,9 @@ export const OnboardingOverlay = ({ onComplete }: Props) => {
                 autoCapitalize="none"
                 keyboardType="email-address"
               />
+              {accountEmailInvalid ? (
+                <Text style={styles.errorText}>Enter a valid email address.</Text>
+              ) : null}
             </View>
             <View style={styles.questionBlock}>
               <Text style={styles.questionLabel}>Password</Text>
@@ -312,6 +345,9 @@ export const OnboardingOverlay = ({ onComplete }: Props) => {
                 placeholderTextColor="#B0B0B0"
                 secureTextEntry
               />
+              {accountPasswordInvalid ? (
+                <Text style={styles.errorText}>Use at least {MIN_PASSWORD_LENGTH} characters.</Text>
+              ) : null}
             </View>
             <Pressable
               disabled={!accountFormReady}
@@ -358,6 +394,9 @@ export const OnboardingOverlay = ({ onComplete }: Props) => {
                 autoCapitalize="none"
                 keyboardType="email-address"
               />
+              {loginEmailInvalid ? (
+                <Text style={styles.errorText}>Enter a valid email address.</Text>
+              ) : null}
             </View>
             <View style={styles.questionBlock}>
               <Text style={styles.questionLabel}>Password</Text>
@@ -372,6 +411,9 @@ export const OnboardingOverlay = ({ onComplete }: Props) => {
                 placeholderTextColor="#B0B0B0"
                 secureTextEntry
               />
+              {loginPasswordInvalid ? (
+                <Text style={styles.errorText}>Use at least {MIN_LOGIN_PASSWORD_LENGTH} characters.</Text>
+              ) : null}
             </View>
             <Pressable style={styles.forgotButton} onPress={handleForgotPassword}>
               <Text style={styles.forgotButtonLabel}>Forgot password?</Text>
@@ -627,6 +669,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#3a3a3a',
     marginTop: 8,
+  },
+  errorText: {
+    fontSize: 13,
+    color: '#B00020',
+    marginTop: 6,
   },
   disabledButton: {
     backgroundColor: '#C8C8C8',
