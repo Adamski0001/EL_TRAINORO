@@ -1,7 +1,15 @@
 import { BlurView } from 'expo-blur';
+import * as Haptics from 'expo-haptics';
 import { AlertTriangle, Home, Search, UserRound } from 'lucide-react-native';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  PanGestureHandler,
+  PanGestureHandlerGestureEvent,
+  PanGestureHandlerStateChangeEvent,
+  State,
+} from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export type NavKey = 'home' | 'search' | 'traffic' | 'profile';
 
@@ -25,39 +33,155 @@ type BottomNavProps = {
 
 export function BottomNav({ activeKey, onSelect }: BottomNavProps) {
   const insets = useSafeAreaInsets();
+  const [hoveredKey, setHoveredKey] = useState<NavKey | null>(null);
+  const hoveredKeyRef = useRef<NavKey | null>(null);
+  const buttonLayouts = useRef<Record<NavKey, { x: number; width: number }>>({});
+  const isDraggingRef = useRef(false);
+
+  useEffect(() => {
+    hoveredKeyRef.current = hoveredKey;
+  }, [hoveredKey]);
+
+  const setHover = useCallback(
+    (key: NavKey | null, triggerHaptic = true) => {
+      if (hoveredKeyRef.current === key) {
+        return;
+      }
+      hoveredKeyRef.current = key;
+      setHoveredKey(key);
+      if (key && triggerHaptic) {
+        Haptics.selectionAsync().catch(() => undefined);
+      }
+    },
+    []
+  );
+
+  const handleButtonLayout = useCallback((key: NavKey, event: LayoutChangeEvent) => {
+    const { x, width } = event.nativeEvent.layout;
+    buttonLayouts.current[key] = { x, width };
+  }, []);
+
+  const handleHoverAtX = useCallback(
+    (x: number) => {
+      const nextKey =
+        NAV_ITEMS.find(item => {
+          const layout = buttonLayouts.current[item.key];
+          if (!layout) {
+            return false;
+          }
+          return x >= layout.x && x <= layout.x + layout.width;
+        })?.key ?? null;
+      setHover(nextKey, true);
+    },
+    [setHover]
+  );
+
+  const commitSelection = useCallback(
+    (key: NavKey | null) => {
+      if (!key) {
+        return;
+      }
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
+      setHover(null, false);
+      onSelect(key);
+    },
+    [onSelect, setHover]
+  );
+
+  const handleGestureEvent = useCallback(
+    (event: PanGestureHandlerGestureEvent) => {
+      handleHoverAtX(event.nativeEvent.x);
+    },
+    [handleHoverAtX]
+  );
+
+  const handleGestureStateChange = useCallback(
+    (event: PanGestureHandlerStateChangeEvent) => {
+      const { state, x } = event.nativeEvent;
+
+      if (state === State.BEGAN) {
+        isDraggingRef.current = false;
+      }
+
+      if (state === State.BEGAN || state === State.ACTIVE) {
+        handleHoverAtX(x);
+      }
+
+      if (state === State.ACTIVE) {
+        isDraggingRef.current = true;
+      }
+
+      if (
+        state === State.END ||
+        state === State.CANCELLED ||
+        state === State.FAILED
+      ) {
+        if (isDraggingRef.current) {
+          commitSelection(hoveredKeyRef.current);
+        }
+        isDraggingRef.current = false;
+        setHover(null, false);
+      }
+    },
+    [commitSelection, handleHoverAtX, setHover]
+  );
+
+  const handlePressIn = useCallback(
+    (key: NavKey) => {
+      setHover(key, false);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
+    },
+    [setHover]
+  );
+
+  const handleLongPress = useCallback(() => {
+    Haptics.selectionAsync().catch(() => undefined);
+  }, []);
 
   return (
     <View
       pointerEvents="box-none"
       style={[styles.root, { paddingBottom: Math.max(insets.bottom, 18) }]}
     >
-      <BlurView intensity={85} tint="dark" style={styles.navContainer}>
-        {NAV_ITEMS.map(item => {
-          const Icon = item.Icon;
-          const isActive = item.key === activeKey;
+      <PanGestureHandler
+        onGestureEvent={handleGestureEvent}
+        onHandlerStateChange={handleGestureStateChange}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+      >
+        <BlurView intensity={85} tint="dark" style={styles.navContainer}>
+          {NAV_ITEMS.map(item => {
+            const Icon = item.Icon;
+            const isActive = item.key === activeKey;
+            const isHovering = hoveredKey === item.key;
 
-          return (
-            <Pressable
-              key={item.key}
-              onPress={() => onSelect(item.key)}
-              style={({ pressed }) => [
-                styles.navButton,
-                isActive && styles.navButtonActive,
-                pressed && !isActive && styles.navButtonPressed,
-              ]}
-              accessibilityRole="button"
-              accessibilityState={{ selected: isActive }}
-            >
-              <Icon
-                size={22}
-                color={isActive ? '#FFFFFF' : 'rgba(255,255,255,0.75)'}
-                strokeWidth={2.4}
-              />
-              <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>{item.label}</Text>
-            </Pressable>
-          );
-        })}
-      </BlurView>
+            return (
+              <Pressable
+                key={item.key}
+                onPressIn={() => handlePressIn(item.key)}
+                onPress={() => commitSelection(item.key)}
+                onLongPress={handleLongPress}
+                onLayout={event => handleButtonLayout(item.key, event)}
+                style={({ pressed }) => [
+                  styles.navButton,
+                  isActive && styles.navButtonActive,
+                  (pressed || isHovering) && !isActive && styles.navButtonPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isActive }}
+              >
+                <Icon
+                  size={22}
+                  color={isActive ? '#FFFFFF' : 'rgba(255,255,255,0.75)'}
+                  strokeWidth={2.4}
+                />
+                <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>
+                  {item.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </BlurView>
+      </PanGestureHandler>
     </View>
   );
 }
