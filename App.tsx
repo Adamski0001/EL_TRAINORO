@@ -1,7 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DevSettings, Image, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -28,6 +28,7 @@ import { useFrameRateLogger } from './hooks/useFrameRateLogger';
 import { useNotificationPermission } from './hooks/useNotificationPermission';
 import type { Station } from './types/stations';
 import type { TrainPosition } from './types/trains';
+import { OnboardingOverlay, type OnboardingAnswers } from './components/onboarding/OnboardingOverlay';
 
 const trainarLogo = require('./assets/images/trainar-logo.png');
 type PrimaryNavKey = Exclude<NavKey, 'traffic'>;
@@ -69,6 +70,7 @@ export default function App() {
 
 function AppContent() {
   const [activeNav, setActiveNav] = useState<NavKey>('home');
+  const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [trafficSheetVisible, setTrafficSheetVisible] = useState(false);
   const [trafficSnap, setTrafficSnap] = useState<TrafficSheetSnapPoint>('hidden');
   const [trainSheetVisible, setTrainSheetVisible] = useState(false);
@@ -81,6 +83,7 @@ function AppContent() {
   const [stationSheetVisible, setStationSheetVisible] = useState(false);
   const [stationSnap, setStationSnap] = useState<TrafficSheetSnapPoint>('hidden');
   const [mapFocusRequest, setMapFocusRequest] = useState<MapFocusRequest | null>(null);
+  const onboardingContextRef = useRef<OnboardingAnswers | null>(null);
   const navTranslateY = useSharedValue(0);
   useFrameRateLogger('root', PERF_LOGGING_ENABLED);
   const { status: notificationStatus, request: requestNotificationPermission } = useNotificationPermission();
@@ -251,12 +254,22 @@ function AppContent() {
     transform: [{ translateY: navTranslateY.value }],
   }));
 
+  const handleOnboardingComplete = useCallback(
+    (answers?: OnboardingAnswers) => {
+      if (answers) {
+        onboardingContextRef.current = answers;
+      }
+      setOnboardingComplete(true);
+    },
+    [setOnboardingComplete],
+  );
+
   return (
     <GestureHandlerRootView style={styles.flex}>
       <SafeAreaProvider style={styles.safeArea}>
         <View style={styles.container}>
           <StatusBar style="light" />
-          <TrainarHeader />
+          {onboardingComplete && <TrainarHeader />}
           <TrainMapContainer
             style={styles.map}
             initialRegion={SWEDEN_REGION}
@@ -316,6 +329,7 @@ function AppContent() {
               setActiveNav(primaryNav);
             }}
           />
+          {!onboardingComplete && <OnboardingOverlay onComplete={handleOnboardingComplete} />}
         </View>
       </SafeAreaProvider>
     </GestureHandlerRootView>
