@@ -86,6 +86,42 @@ const INTEREST_KEYWORDS: Record<(typeof INTEREST_TOPICS)[number]['key'], string[
   city: ['stockholm', 'göteborg', 'malmö', 'pendeltåg', 'spårproblem'],
 };
 
+const parseWindowMinutes = (window: string | null | undefined) => {
+  if (!window || !window.includes('-')) {
+    return null;
+  }
+  const [start, end] = window.split('-');
+  const toMinutes = (value: string) => {
+    const [h, m] = value.split(':').map(Number);
+    if (Number.isNaN(h) || Number.isNaN(m)) {
+      return null;
+    }
+    return h * 60 + m;
+  };
+  const startMinutes = toMinutes(start);
+  const endMinutes = toMinutes(end);
+  if (startMinutes === null || endMinutes === null) {
+    return null;
+  }
+  return { start: startMinutes, end: endMinutes };
+};
+
+const isWithinCommuteWindow = (timestamp: string | null | undefined, window: string | null | undefined) => {
+  if (!timestamp || !window) {
+    return false;
+  }
+  const parsedWindow = parseWindowMinutes(window);
+  if (!parsedWindow) {
+    return false;
+  }
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  return minutes >= parsedWindow.start && minutes <= parsedWindow.end;
+};
+
 const BACKEND_VERSION =
   Constants.expoConfig?.extra?.backendVersion ??
   Constants.manifest?.extra?.backendVersion ??
@@ -154,6 +190,10 @@ export function ProfilePanel({
   const isNotificationEnabled = notificationStatus === 'granted';
   const isLocationEnabled = locationPermission === 'granted';
   const interestTopics = profile.preferences.interestTopics ?? [];
+  const membershipLabel = useMemo(
+    () => (profile.user.tier.toLowerCase().includes('pro') ? 'Pro' : 'Free'),
+    [profile.user.tier],
+  );
 
   const itemLookup = useMemo(() => {
     const lookup = new Map<string, TrainSearchItem>();
@@ -307,8 +347,26 @@ export function ProfilePanel({
     if (!trafficEvents?.length) {
       return [];
     }
-    const threshold = SEVERITY_RANK[profile.preferences.impactThreshold as ImpactLevel] ?? 1;
-    return trafficEvents
+    const { impactThreshold, defaultRegion, commuteWindow } = profile.preferences;
+    const regionPreference = defaultRegion ?? 'Sverige';
+    const regionNormalized = regionPreference.toLowerCase();
+    const threshold = SEVERITY_RANK[impactThreshold as ImpactLevel] ?? 1;
+
+    const matchesRegion = (event: TrafficEvent) => {
+      if (regionPreference === 'Sverige') {
+        return false;
+      }
+      const base = `${event.title} ${event.description ?? ''} ${event.segment ?? ''}`.toLowerCase();
+      if (base.includes(regionNormalized)) {
+        return true;
+      }
+      return event.stations.some(station => {
+        const name = (station.name ?? station.signature ?? '').toLowerCase();
+        return name.includes(regionNormalized);
+      });
+    };
+
+    const candidates = trafficEvents
       .filter(event => SEVERITY_RANK[event.severity as ImpactLevel] >= threshold)
       .map(event => {
         const distanceKm = userCoords ? computeEventDistance(event, userCoords) : null;
@@ -324,32 +382,45 @@ export function ProfilePanel({
           const keywords = INTEREST_KEYWORDS[topic as keyof typeof INTEREST_KEYWORDS] ?? [topic];
           return keywords.some(keyword => haystack.includes(keyword.toLowerCase())) ? score + 0.12 : score;
         }, 0);
-        const regionalBoost =
-          profile.preferences.defaultRegion !== 'Sverige' && event.segment
-            ? event.segment.toLowerCase().includes(profile.preferences.defaultRegion.toLowerCase())
-              ? 0.05
-              : 0
-            : 0;
+        const regionMatch = matchesRegion(event);
+        const commuteMatch = isWithinCommuteWindow(event.startTime ?? event.updatedAt, commuteWindow);
+        const regionalBoost = regionMatch ? 0.6 : 0;
+        const commuteBoost = commuteMatch ? 0.25 : 0;
         const combinedScore =
-          distanceScore * 0.55 + severityScore * 0.35 + interestScore + regionalBoost;
-        return { event, distanceKm, score: combinedScore };
-      })
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3);
-  }, [
-    trafficEvents,
-    profile.preferences.impactThreshold,
-    profile.preferences.defaultRegion,
-    interestTopics,
-    userCoords,
-    isLocationEnabled,
-  ]);
+          distanceScore * 0.4 +
+          severityScore * 0.3 +
+          interestScore +
+          regionalBoost +
+          commuteBoost;
+        return { event, distanceKm, score: combinedScore, regionMatch, commuteMatch };
+      });
+
+    const sortDesc = (a: typeof candidates[number], b: typeof candidates[number]) => b.score - a.score;
+
+    const maybeRegionFiltered =
+      regionPreference !== 'Sverige'
+        ? candidates.filter(item => item.regionMatch)
+        : candidates;
+
+    const primaryList = maybeRegionFiltered.length ? maybeRegionFiltered : candidates;
+
+    const commuteFirst = primaryList
+      .filter(item => item.commuteMatch)
+      .sort(sortDesc)
+      .concat(primaryList.filter(item => !item.commuteMatch).sort(sortDesc));
+
+    return commuteFirst.slice(0, 3).map(({ event, distanceKm, score }) => ({
+      event,
+      distanceKm,
+      score,
+    }));
+  }, [trafficEvents, profile.preferences, interestTopics, userCoords, isLocationEnabled]);
 
   useEffect(() => {
     recommendedEvents.forEach(entry => {
       ensureTrafficSummary(entry.event);
     });
-  }, [ensureTrafficSummary, recommendedEvents]);
+  }, [ensureTrafficSummary, recommendedEvents, profile.preferences.defaultRegion, profile.preferences.commuteWindow]);
 
   const handleOpenTrain = useCallback(
     (train: TrainPosition) => {
@@ -514,13 +585,9 @@ export function ProfilePanel({
               </Text>
             </View>
             <View style={[styles.metaItem, styles.metaItemRight]}> 
-              <Text style={styles.metaLabel}>Aviseringar</Text>
-              <Text style={[styles.metaValue, { color: accentColor }]}>
-                {isNotificationEnabled ? 'Aktiva' : 'Inaktiva'}
-              </Text>
-              <Text style={styles.metaSub}>
-                {notificationReason} · Tröskel {IMPACT_LABELS[profile.preferences.impactThreshold]}
-              </Text>
+              <Text style={styles.metaLabel}>Medlemsnivå</Text>
+              <Text style={[styles.metaValue, { color: accentColor }]}>{membershipLabel}</Text>
+              <Text style={styles.metaSub}>{profile.user.tier}</Text>
             </View>
           </View>
 
