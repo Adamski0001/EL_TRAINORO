@@ -161,6 +161,15 @@ function AppContent() {
     [openTrainDetails],
   );
 
+  const handleSearchSelectStation = useCallback(
+    (station: Station) => {
+      openStationDetails(station, { focus: true });
+      setPrimaryNav('home');
+      setActiveNav('home');
+    },
+    [openStationDetails],
+  );
+
   const handleOpenTrainFromProfile = useCallback(
     (train: TrainPosition) => {
       setProfileSheetVisible(false);
@@ -262,6 +271,7 @@ function AppContent() {
             visible={activeNav === 'search'}
             topOffset={SEARCH_PANEL_TOP_OFFSET}
             onSelectTrain={handleSearchSelectTrain}
+            onSelectStation={handleSearchSelectStation}
             onRequestClose={() => {
               setPrimaryNav('home');
               setActiveNav('home');

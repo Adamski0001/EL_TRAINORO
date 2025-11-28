@@ -42,6 +42,7 @@ const TrainMarker = memo(
         }}
         anchor={{ x: 0.5, y: 0.5 }}
         tracksViewChanges={false}
+        zIndex={10}
         onPress={handlePress}
       >
         <View style={[styles.markerWrapper, selected && styles.markerWrapperSelected]}>
@@ -56,10 +57,25 @@ const TrainMarker = memo(
     prev.train === next.train && prev.selected === next.selected && prev.onSelectTrain === next.onSelectTrain,
 );
 
+// PERF NOTE:
+// TrainMarkers renders all trains as markers. Extremely large train lists add render cost on top of stations.
+// Apply mild thinning only for very large counts while leaving normal behavior unchanged.
+
 function TrainMarkersComponent({ trains, selectedTrainId, onSelectTrain }: TrainMarkersProps) {
+  const trainCount = trains.length;
+  let visibleTrains = trains;
+
+  if (trainCount > 1000) {
+    visibleTrains = trains.filter((_, index) => index % 2 === 0);
+  }
+
+  if (__DEV__) {
+    console.log('[TrainMarkers][Diag] count=', trainCount);
+  }
+
   return (
     <>
-      {trains.map(train => (
+      {visibleTrains.map(train => (
         <TrainMarker
           key={train.id}
           train={train}

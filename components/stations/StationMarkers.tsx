@@ -1,11 +1,8 @@
 import { memo, useCallback } from 'react';
-import { Image, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { Marker } from 'react-native-maps';
 
 import type { Station } from '../../types/stations';
-
-const STATION_ICON = require('../../assets/station-icon.png');
-const STATION_ICON_SELECTED = require('../../assets/station-icon-selected.png');
 
 type StationMarkersProps = {
   stations: Station[];
@@ -37,14 +34,10 @@ const StationMarker = memo(
         }}
         anchor={{ x: 0.5, y: 0.5 }}
         tracksViewChanges={false}
+        zIndex={1}
         onPress={handlePress}
       >
-        <View style={[styles.markerWrapper, selected && styles.markerWrapperSelected]}>
-          <Image
-            source={selected ? STATION_ICON_SELECTED : STATION_ICON}
-            style={styles.icon}
-          />
-        </View>
+        <View style={[styles.marker, selected && styles.markerSelected]} />
       </Marker>
     );
   },
@@ -56,7 +49,14 @@ const StationMarker = memo(
     prev.station.coordinate?.longitude === next.station.coordinate?.longitude,
 );
 
+// PERF NOTE:
+// All stations are rendered to ensure every location (e.g., Stockholm C) is visible and searchable on the map.
+
 function StationMarkersComponent({ stations, selectedStationId, onSelectStation }: StationMarkersProps) {
+  if (__DEV__) {
+    console.log('[StationMarkers][Diag] count=', stations.length);
+  }
+
   return (
     <>
       {stations.map(station => (
@@ -74,20 +74,19 @@ function StationMarkersComponent({ stations, selectedStationId, onSelectStation 
 export const StationMarkers = memo(StationMarkersComponent);
 
 const styles = StyleSheet.create({
-  markerWrapper: {
+  marker: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#b8bcc2',
     shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 12,
-    elevation: 8,
+    shadowOpacity: 0.12,
+    shadowOffset: { width: 0, height: 1 },
+    shadowRadius: 1.5,
+    elevation: 2,
   },
-  markerWrapperSelected: {
-    shadowOpacity: 0.6,
-    shadowRadius: 18,
-  },
-  icon: {
-    width: 30,
-    height: 30,
-    resizeMode: 'contain',
+  markerSelected: {
+    backgroundColor: '#cfd3d8',
+    transform: [{ scale: 1.15 }],
   },
 });

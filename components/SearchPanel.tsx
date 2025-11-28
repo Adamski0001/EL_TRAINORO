@@ -1,7 +1,7 @@
 import { BlurView } from 'expo-blur';
-import { Map as RouteIcon, Search as SearchIcon, Star, TrainFront } from 'lucide-react-native';
+import { Map as RouteIcon, MapPin, Search as SearchIcon, Star, TrainFront } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Dimensions, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Dimensions, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { GestureResponderEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
@@ -15,25 +15,100 @@ import Animated, {
 import { useTrainSearchIndex } from '../hooks/useTrainSearchIndex';
 import type { TrainPosition } from '../types/trains';
 import { useUserProfile } from '../hooks/useUserProfile';
+import { useStations } from '../hooks/useStations';
+import type { Station } from '../types/stations';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 type SearchPanelProps = {
   visible: boolean;
   onSelectTrain: (train: TrainPosition) => void;
+  onSelectStation: (station: Station) => void;
   onRequestClose: () => void;
   topOffset?: number;
 };
 
-export function SearchPanel({ visible, onSelectTrain, onRequestClose, topOffset = 0 }: SearchPanelProps) {
+type TrainSuggestion = {
+  type: 'train';
+  id: string;
+  title: string;
+  subtitle: string | null;
+  routeText: string | null;
+  train: TrainPosition;
+  searchText: string;
+};
+
+type StationSuggestion = {
+  type: 'station';
+  id: string;
+  title: string;
+  subtitle: string | null;
+  regionLabel: string | null;
+  linesLabel: string | null;
+  signature: string;
+  station: Station;
+  searchText: string;
+};
+
+type SearchSuggestion = TrainSuggestion | StationSuggestion;
+
+export function SearchPanel({
+  visible,
+  onSelectTrain,
+  onSelectStation,
+  onRequestClose,
+  topOffset = 0,
+}: SearchPanelProps) {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const translateX = useSharedValue(SCREEN_WIDTH);
   const opacity = useSharedValue(0);
   const { items } = useTrainSearchIndex();
+  const { stations } = useStations();
   const profile = useUserProfile();
   const inputRef = useRef<TextInput | null>(null);
   const favoriteSet = useMemo(() => new Set(profile.favorites), [profile.favorites]);
+  const trainSuggestions = useMemo<TrainSuggestion[]>(
+    () =>
+      items.map(item => ({
+        ...item,
+        type: 'train' as const,
+      })),
+    [items],
+  );
+  const stationSuggestions = useMemo<StationSuggestion[]>(() => {
+    return stations.map(station => {
+      const linesLabel =
+        station.lines.length > 0
+          ? station.lines
+              .map(line => line.name)
+              .filter(Boolean)
+              .slice(0, 3)
+              .join(' • ')
+          : null;
+      const nameFields = [
+        station.displayName,
+        station.shortDisplayName ?? '',
+        station.officialName ?? '',
+        station.signature,
+        ...station.displayNames,
+      ];
+      const haystack = nameFields
+        .join(' ')
+        .toLowerCase();
+      return {
+        type: 'station' as const,
+        id: station.id,
+        title: station.displayName,
+        subtitle: station.officialName ?? station.shortDisplayName ?? null,
+        regionLabel: station.region,
+        linesLabel,
+        signature: station.signature,
+        station,
+        searchText: haystack,
+      };
+    });
+  }, [stations]);
 
   useEffect(() => {
     const shouldReset = !visible;
@@ -68,28 +143,45 @@ export function SearchPanel({ visible, onSelectTrain, onRequestClose, topOffset 
     inputRef.current?.blur();
   }, [visible]);
 
-  const suggestions = useMemo(() => {
+  const suggestions = useMemo<SearchSuggestion[]>(() => {
     const q = query.trim().toLowerCase();
     if (!q) {
       return [];
     }
-    return items.filter(item => item.searchText.includes(q)).slice(0, 10);
-  }, [items, query]);
+    const scoredStations = stationSuggestions
+      .filter(item => item.searchText.includes(q))
+      .map(item => {
+        const index = item.title.toLowerCase().indexOf(q);
+        return { item, score: index === -1 ? Number.MAX_SAFE_INTEGER : index };
+      })
+      .sort((a, b) => a.score - b.score || a.item.title.localeCompare(b.item.title))
+      .map(entry => entry.item);
+    const stationMatches = scoredStations.slice(0, 3);
+    const remainingSlots = Math.max(0, 10 - stationMatches.length);
+    const trainMatches = trainSuggestions
+      .filter(item => item.searchText.includes(q))
+      .slice(0, remainingSlots);
+    return [...stationMatches, ...trainMatches];
+  }, [query, stationSuggestions, trainSuggestions]);
 
   const showSuggestions = query.trim().length > 0 && suggestions.length > 0;
   const handleSelectSuggestion = useCallback(
-    (train: TrainPosition) => {
-      onSelectTrain(train);
+    (suggestion: SearchSuggestion) => {
+      if (suggestion.type === 'train') {
+        onSelectTrain(suggestion.train);
+      } else {
+        onSelectStation(suggestion.station);
+      }
       onRequestClose();
     },
-    [onRequestClose, onSelectTrain],
+    [onRequestClose, onSelectStation, onSelectTrain],
   );
 
   const handleSubmit = useCallback(() => {
     if (!suggestions.length) {
       return;
     }
-    handleSelectSuggestion(suggestions[0].train);
+    handleSelectSuggestion(suggestions[0]);
   }, [handleSelectSuggestion, suggestions]);
 
   const handleToggleFavorite = useCallback(
@@ -111,7 +203,7 @@ export function SearchPanel({ visible, onSelectTrain, onRequestClose, topOffset 
           <TextInput
             ref={inputRef}
             style={styles.input}
-            placeholder="Sök tågnummer eller linje"
+            placeholder="Sök tåg, linje eller station"
             placeholderTextColor="rgba(255,255,255,0.6)"
             autoCapitalize="none"
             value={query}
@@ -122,47 +214,65 @@ export function SearchPanel({ visible, onSelectTrain, onRequestClose, topOffset 
         </BlurView>
       </View>
       {showSuggestions && (
-        <View style={styles.suggestionsList}>
+        <ScrollView style={styles.suggestionsList} contentContainerStyle={styles.suggestionsContent}>
           {suggestions.map(item => {
-            const isFavorite = favoriteSet.has(item.id);
+            const isTrain = item.type === 'train';
+            const isFavorite = isTrain ? favoriteSet.has(item.id) : false;
+            const primaryDetail = isTrain ? item.routeText ?? 'Rutt saknas' : item.linesLabel ?? 'Station';
+            const secondaryDetail = isTrain
+              ? item.subtitle ?? 'Ingen operatör tillgänglig'
+              : item.regionLabel ?? 'Station';
+            const badge = isTrain
+              ? item.train.advertisedTrainIdent ?? item.train.operationalTrainNumber ?? item.id
+              : item.signature;
             return (
               <Pressable
-                key={item.id}
-                onPress={() => handleSelectSuggestion(item.train)}
+                key={`${item.type}-${item.id}`}
+                onPress={() => handleSelectSuggestion(item)}
                 style={({ pressed }) => [styles.suggestionPressable, pressed && styles.suggestionPressablePressed]}
               >
                 <BlurView intensity={65} tint="dark" style={styles.suggestionCard}>
                   <View style={styles.suggestionIcon}>
-                    <TrainFront size={18} color="#fff" strokeWidth={2.4} />
+                    {isTrain ? (
+                      <TrainFront size={18} color="#fff" strokeWidth={2.4} />
+                    ) : (
+                      <MapPin size={18} color="#fff" strokeWidth={2.4} />
+                    )}
                   </View>
                   <View style={styles.suggestionBody}>
                     <Text style={styles.suggestionTitle}>{item.title}</Text>
                     <View style={styles.routeRow}>
-                      <RouteIcon size={14} color="rgba(255,255,255,0.5)" strokeWidth={2} />
-                      <Text style={styles.suggestionRoute}>{item.routeText ?? 'Rutt saknas'}</Text>
+                      {isTrain ? (
+                        <RouteIcon size={14} color="rgba(255,255,255,0.5)" strokeWidth={2} />
+                      ) : (
+                        <MapPin size={14} color="rgba(255,255,255,0.5)" strokeWidth={2} />
+                      )}
+                      <Text style={styles.suggestionRoute}>{primaryDetail}</Text>
                     </View>
-                    <Text style={styles.suggestionStatus}>{item.subtitle ?? 'Ingen operatör tillgänglig'}</Text>
+                    <Text style={styles.suggestionStatus}>{secondaryDetail}</Text>
                   </View>
                   <View style={styles.suggestionTrailing}>
                     <Text style={styles.trainId}>
-                      {item.train.advertisedTrainIdent ?? item.train.operationalTrainNumber ?? item.id}
+                      {badge}
                     </Text>
-                    <Pressable
-                      onPress={event => handleToggleFavorite(item.id, event)}
-                      style={({ pressed }) => [styles.favoriteButton, pressed && styles.favoriteButtonPressed]}
-                    >
-                      <Star
-                        size={18}
-                        color={isFavorite ? '#ffd564' : 'rgba(255,255,255,0.6)'}
-                        strokeWidth={2.2}
-                      />
-                    </Pressable>
+                    {isTrain && (
+                      <Pressable
+                        onPress={event => handleToggleFavorite(item.id, event)}
+                        style={({ pressed }) => [styles.favoriteButton, pressed && styles.favoriteButtonPressed]}
+                      >
+                        <Star
+                          size={18}
+                          color={isFavorite ? '#ffd564' : 'rgba(255,255,255,0.6)'}
+                          strokeWidth={2.2}
+                        />
+                      </Pressable>
+                    )}
                   </View>
                 </BlurView>
               </Pressable>
             );
           })}
-        </View>
+        </ScrollView>
       )}
     </Animated.View>
   );
@@ -198,7 +308,11 @@ const styles = StyleSheet.create({
   suggestionsList: {
     width: SCREEN_WIDTH - 40,
     marginTop: 14,
+    maxHeight: 360,
+  },
+  suggestionsContent: {
     gap: 8,
+    paddingBottom: 12,
   },
   suggestionPressable: {
     borderRadius: 18,
