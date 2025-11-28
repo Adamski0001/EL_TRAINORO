@@ -21,6 +21,7 @@ export type ProfilePreferences = {
   commuteWindow: string;
   impactThreshold: TrafficEventSeverity;
   defaultRegion: string;
+  interestTopics: string[];
 };
 
 export type ProfileUserInfo = {
@@ -45,6 +46,7 @@ const DEFAULT_PREFERENCES: ProfilePreferences = {
   commuteWindow: '06:30-09:00',
   impactThreshold: 'medium',
   defaultRegion: 'Sverige',
+  interestTopics: [],
 };
 
 const DEFAULT_USER: ProfileUserInfo = {
@@ -173,7 +175,10 @@ const hydrateProfileState = async () => {
         favorites: Array.isArray(parsed.favorites) ? parsed.favorites : state.favorites,
         recentTrains: Array.isArray(parsed.recentTrains) ? parsed.recentTrains : state.recentTrains,
         savedStations: Array.isArray(parsed.savedStations) ? parsed.savedStations : state.savedStations,
-        preferences: parsed.preferences ?? state.preferences,
+        preferences: {
+          ...DEFAULT_PREFERENCES,
+          ...(parsed.preferences ?? {}),
+        },
         user: parsed.user ?? state.user,
       });
     }

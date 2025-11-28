@@ -7,6 +7,7 @@ import {
   Linking,
   Pressable,
   ScrollView,
+  Switch,
   StyleSheet,
   Text,
   View,
@@ -24,12 +25,17 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { deriveAccentColor } from '../../lib/deriveAccentColor';
+import { formatDistanceLabel } from '../../lib/geo';
 import { useTrainSearchIndex, type TrainSearchItem } from '../../hooks/useTrainSearchIndex';
 import { useNotificationPermission } from '../../hooks/useNotificationPermission';
 import { useReloadApp, useReloadInfo } from '../../contexts/ReloadContext';
+import { useTrafficEvents } from '../../hooks/useTrafficEvents';
+import { useTrafficEventSummaries } from '../../hooks/useTrafficEventSummaries';
 import { useUserLocation } from '../../hooks/useUserLocation';
 import { useUserProfile } from '../../hooks/useUserProfile';
+import { computeEventDistance } from '../../lib/trafficEventUtils';
 import type { TrainPosition } from '../../types/trains';
+import type { TrafficEvent } from '../../types/traffic';
 import type { TrafficSheetSnapPoint } from '../traffic/sheetSnapPoints';
 import {
   SHEET_BOTTOM_LOCK_REGION,
@@ -52,7 +58,33 @@ const IMPACT_LABELS: Record<(typeof IMPACT_OPTIONS)[number], string> = {
   high: 'Stor påverkan',
   critical: 'Mycket stor påverkan',
 };
+const SEVERITY_COLORS: Record<ImpactLevel, string> = {
+  low: '#34d399',
+  medium: '#fbbf24',
+  high: '#fb7185',
+  critical: '#f87171',
+};
 const REGION_OPTIONS = ['Sverige', 'Stockholm', 'Göteborg', 'Malmö'];
+const SEVERITY_RANK: Record<ImpactLevel, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
+const INTEREST_TOPICS = [
+  { key: 'commuter', label: 'Pendling', hint: 'Vardagar morgon/kväll' },
+  { key: 'longdistance', label: 'Långresa', hint: 'Fjärr- och nattåg' },
+  { key: 'maintenance', label: 'Banarbeten', hint: 'Service & avstängningar' },
+  { key: 'weather', label: 'Väderpåverkan', hint: 'Snö, storm, halka' },
+  { key: 'city', label: 'Storstad', hint: 'Stockholm/Göteborg/Malmö' },
+] as const;
+const INTEREST_KEYWORDS: Record<(typeof INTEREST_TOPICS)[number]['key'], string[]> = {
+  commuter: ['pendel', 'rusning', 'försening', 'pendeltåg'],
+  longdistance: ['fjärr', 'nattåg', 'intercity', 'snabbtåg', 'sj'],
+  maintenance: ['banarbete', 'service', 'underhåll', 'avstängd', 'arbete'],
+  weather: ['snö', 'storm', 'väder', 'halk', 'oväder'],
+  city: ['stockholm', 'göteborg', 'malmö', 'pendeltåg', 'spårproblem'],
+};
 
 const BACKEND_VERSION =
   Constants.expoConfig?.extra?.backendVersion ??
@@ -106,16 +138,22 @@ export function ProfilePanel({
     request: requestNotificationPermission,
   } = useNotificationPermission();
   const {
+    coords: userCoords,
     permissionStatus: locationPermission,
     canAskAgain: canRequestLocation,
     requestPermission: requestLocationPermission,
     loading: requestingLocation,
     error: locationError,
   } = useUserLocation({ active: visible });
+  const { events: trafficEvents, loading: trafficLoading, error: trafficError } = useTrafficEvents();
+  const { summaries: trafficSummaries, ensureSummary: ensureTrafficSummary } = useTrafficEventSummaries();
   const reloadApp = useReloadApp();
   const { lastReloadedAt } = useReloadInfo();
 
   const accentColor = useMemo(() => deriveAccentColor(profile.user.id), [profile.user.id]);
+  const isNotificationEnabled = notificationStatus === 'granted';
+  const isLocationEnabled = locationPermission === 'granted';
+  const interestTopics = profile.preferences.interestTopics ?? [];
 
   const itemLookup = useMemo(() => {
     const lookup = new Map<string, TrainSearchItem>();
@@ -142,6 +180,7 @@ export function ProfilePanel({
   }, [itemLookup, profile.recentTrains]);
 
   const savedStations = profile.savedStations;
+  const totalFavorites = favoriteTrains.length + savedStations.length;
 
   const handleToggleFavorite = useCallback(
     (trainId: string) => {
@@ -172,6 +211,45 @@ export function ProfilePanel({
       setNotificationRequesting(false);
     }
   }, [requestNotificationPermission]);
+
+  const handleNotificationToggle = useCallback(
+    (nextValue: boolean) => {
+      if (nextValue && !isNotificationEnabled) {
+        void handleRequestNotifications();
+        return;
+      }
+      if (!nextValue && isNotificationEnabled) {
+        Linking.openSettings().catch(error => console.warn('[ProfilePanel] notification settings', error));
+      }
+    },
+    [handleRequestNotifications, isNotificationEnabled],
+  );
+
+  const handleLocationToggle = useCallback(
+    (nextValue: boolean) => {
+      if (nextValue && !isLocationEnabled) {
+        void requestLocationPermission();
+        return;
+      }
+      if (!nextValue && isLocationEnabled) {
+        Linking.openSettings().catch(error => console.warn('[ProfilePanel] location settings', error));
+      }
+    },
+    [isLocationEnabled, requestLocationPermission],
+  );
+
+  const handleToggleInterest = useCallback(
+    (topicKey: (typeof INTEREST_TOPICS)[number]['key']) => {
+      const current = new Set(interestTopics);
+      if (current.has(topicKey)) {
+        current.delete(topicKey);
+      } else {
+        current.add(topicKey);
+      }
+      profile.setPreferences({ interestTopics: Array.from(current) });
+    },
+    [interestTopics, profile],
+  );
 
   const handleSync = useCallback(async () => {
     setSyncing(true);
@@ -222,6 +300,56 @@ export function ProfilePanel({
   const lastSyncLabel = lastReloadedAt
     ? lastReloadedAt.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' })
     : 'Aldrig';
+
+  const recommendedEvents = useMemo<
+    Array<{ event: TrafficEvent; distanceKm: number | null; score: number }>
+  >(() => {
+    if (!trafficEvents?.length) {
+      return [];
+    }
+    const threshold = SEVERITY_RANK[profile.preferences.impactThreshold as ImpactLevel] ?? 1;
+    return trafficEvents
+      .filter(event => SEVERITY_RANK[event.severity as ImpactLevel] >= threshold)
+      .map(event => {
+        const distanceKm = userCoords ? computeEventDistance(event, userCoords) : null;
+        const distanceScore =
+          typeof distanceKm === 'number'
+            ? Math.max(0, 1 - Math.min(distanceKm, 250) / 250)
+            : isLocationEnabled
+              ? 0.18
+              : 0.1;
+        const severityScore = (SEVERITY_RANK[event.severity as ImpactLevel] + 1) / 4;
+        const haystack = `${event.title} ${event.description ?? ''} ${event.segment ?? ''}`.toLowerCase();
+        const interestScore = interestTopics.reduce((score, topic) => {
+          const keywords = INTEREST_KEYWORDS[topic as keyof typeof INTEREST_KEYWORDS] ?? [topic];
+          return keywords.some(keyword => haystack.includes(keyword.toLowerCase())) ? score + 0.12 : score;
+        }, 0);
+        const regionalBoost =
+          profile.preferences.defaultRegion !== 'Sverige' && event.segment
+            ? event.segment.toLowerCase().includes(profile.preferences.defaultRegion.toLowerCase())
+              ? 0.05
+              : 0
+            : 0;
+        const combinedScore =
+          distanceScore * 0.55 + severityScore * 0.35 + interestScore + regionalBoost;
+        return { event, distanceKm, score: combinedScore };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+  }, [
+    trafficEvents,
+    profile.preferences.impactThreshold,
+    profile.preferences.defaultRegion,
+    interestTopics,
+    userCoords,
+    isLocationEnabled,
+  ]);
+
+  useEffect(() => {
+    recommendedEvents.forEach(entry => {
+      ensureTrafficSummary(entry.event);
+    });
+  }, [ensureTrafficSummary, recommendedEvents]);
 
   const handleOpenTrain = useCallback(
     (train: TrainPosition) => {
@@ -361,6 +489,7 @@ export function ProfilePanel({
             </View>
             <View style={styles.heroText}>
               <Text style={styles.heroName}>{profile.user.name ?? 'Gäst'}</Text>
+              <Text style={styles.heroTierLabel}>Medlemsnivå</Text>
               <Text style={styles.heroTier}>{profile.user.tier}</Text>
             </View>
             <View style={[styles.heroBadge, { borderColor: accentColor }]}>
@@ -372,22 +501,26 @@ export function ProfilePanel({
 
           {!profile.user.authenticated && (
             <Pressable onPress={handleLogin} style={styles.loginButton}>
-              <Text style={styles.loginButtonText}>Logga in / byt konto</Text>
+              <Text style={styles.loginButtonText}>Logga in / skapa konto</Text>
             </Pressable>
           )}
 
           <View style={styles.metaRow}>
             <View style={[styles.metaItem, styles.metaItemLeft]}>
-              <Text style={styles.metaLabel}>Favorittåg</Text>
-              <Text style={[styles.metaValue, { color: accentColor }]}>{profile.favorites.length}</Text>
-              <Text style={styles.metaSub}>Sparade tåg</Text>
+              <Text style={styles.metaLabel}>Favoriter</Text>
+              <Text style={[styles.metaValue, { color: accentColor }]}>{totalFavorites}</Text>
+              <Text style={styles.metaSub}>
+                Tåg {favoriteTrains.length} · Stationer {savedStations.length}
+              </Text>
             </View>
             <View style={[styles.metaItem, styles.metaItemRight]}> 
               <Text style={styles.metaLabel}>Aviseringar</Text>
               <Text style={[styles.metaValue, { color: accentColor }]}>
-                {notificationStatus === 'granted' ? 'Aktiva' : 'Inaktiva'}
+                {isNotificationEnabled ? 'Aktiva' : 'Inaktiva'}
               </Text>
-              <Text style={styles.metaSub}>{notificationReason}</Text>
+              <Text style={styles.metaSub}>
+                {notificationReason} · Tröskel {IMPACT_LABELS[profile.preferences.impactThreshold]}
+              </Text>
             </View>
           </View>
 
@@ -499,43 +632,114 @@ export function ProfilePanel({
           </View>
 
           <View style={styles.section}> 
-            <Text style={styles.sectionTitle}>Aviseringar & plats</Text>
-            <View style={styles.permissionCard}>
-              <View style={styles.permissionText}> 
-                <Text style={styles.permissionTitle}>Pushnotiser</Text>
-                <Text style={styles.permissionSubtitle}>{notificationStatus === 'granted' ? 'Aktivt' : 'Inaktivt'}</Text>
-                <Text style={styles.permissionReason}>{notificationReason}</Text>
-              </View>
-              <Pressable
-                onPress={handleRequestNotifications}
-                disabled={!canRequestNotifications || notificationRequesting}
-                style={({ pressed }) => [styles.permissionButton, pressed && styles.permissionButtonPressed]}
-              >
-                <Text style={styles.permissionButtonText}>
-                  {notificationStatus === 'granted' ? 'Hantera' : notificationRequesting ? 'Begär…' : 'Aktivera'}
-                </Text>
-              </Pressable>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Aviseringar & plats</Text>
+              <Text style={styles.sectionSub}>Plats + nivå styr vad som prioriteras</Text>
             </View>
-            <View style={styles.permissionCard}>
-              <View style={styles.permissionText}>
-                <Text style={styles.permissionTitle}>Platstjänster</Text>
-                <Text style={styles.permissionSubtitle}>{locationMessage}</Text>
-                {locationError ? <Text style={styles.permissionReason}>{locationError}</Text> : null}
+            <View style={styles.permissionGrid}>
+              <View style={styles.permissionCard}>
+                <View style={styles.permissionText}> 
+                  <Text style={styles.permissionTitle}>Pushnotiser</Text>
+                  <Text style={styles.permissionSubtitle}>{isNotificationEnabled ? 'Aktivt' : 'Inaktivt'}</Text>
+                  <Text style={styles.permissionReason}>{notificationReason}</Text>
+                  <Text style={styles.permissionHint}>
+                    Tröskel: {IMPACT_LABELS[profile.preferences.impactThreshold]}
+                  </Text>
+                </View>
+                <View style={styles.permissionControls}>
+                  <Switch
+                    value={isNotificationEnabled}
+                    onValueChange={handleNotificationToggle}
+                    disabled={!canRequestNotifications && !isNotificationEnabled}
+                    thumbColor={isNotificationEnabled ? accentColor : '#f2f2f2'}
+                    trackColor={{ false: 'rgba(255,255,255,0.12)', true: 'rgba(255,255,255,0.25)' }}
+                    ios_backgroundColor="rgba(255,255,255,0.12)"
+                  />
+                  <Pressable
+                    onPress={handleRequestNotifications}
+                    disabled={!canRequestNotifications || notificationRequesting}
+                    style={({ pressed }) => [
+                      styles.permissionButton,
+                      styles.permissionMiniButton,
+                      (!canRequestNotifications && !isNotificationEnabled) && styles.permissionButtonDisabled,
+                      pressed && styles.permissionButtonPressed,
+                    ]}
+                  >
+                    <Text style={styles.permissionButtonText}>
+                      {isNotificationEnabled ? 'Hantera' : notificationRequesting ? 'Begär…' : 'Aktivera'}
+                    </Text>
+                  </Pressable>
+                </View>
               </View>
-              <Pressable
-                onPress={requestLocationPermission}
-                disabled={!canRequestLocation || requestingLocation}
-                style={({ pressed }) => [styles.permissionButton, pressed && styles.permissionButtonPressed]}
-              >
-                <Text style={styles.permissionButtonText}>
-                  {requestingLocation ? 'Begär…' : 'Dela plats'}
-                </Text>
-              </Pressable>
+              <View style={styles.permissionCard}>
+                <View style={styles.permissionText}>
+                  <Text style={styles.permissionTitle}>Platstjänster</Text>
+                  <Text style={styles.permissionSubtitle}>{locationMessage}</Text>
+                  {locationError ? <Text style={styles.permissionReason}>{locationError}</Text> : null}
+                </View>
+                <View style={styles.permissionControls}>
+                  <Switch
+                    value={isLocationEnabled}
+                    onValueChange={handleLocationToggle}
+                    disabled={!canRequestLocation && !isLocationEnabled}
+                    thumbColor={isLocationEnabled ? accentColor : '#f2f2f2'}
+                    trackColor={{ false: 'rgba(255,255,255,0.12)', true: 'rgba(255,255,255,0.25)' }}
+                    ios_backgroundColor="rgba(255,255,255,0.12)"
+                  />
+                  <Pressable
+                    onPress={isLocationEnabled ? () => Linking.openSettings().catch(error => console.warn(error)) : requestLocationPermission}
+                    disabled={!canRequestLocation && !isLocationEnabled}
+                    style={({ pressed }) => [
+                      styles.permissionButton,
+                      styles.permissionMiniButton,
+                      (!canRequestLocation && !isLocationEnabled) && styles.permissionButtonDisabled,
+                      pressed && styles.permissionButtonPressed,
+                    ]}
+                  >
+                    <Text style={styles.permissionButtonText}>
+                      {isLocationEnabled ? 'Hantera' : requestingLocation ? 'Begär…' : 'Dela plats'}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.preferenceCard}>
+              <Text style={styles.preferenceLabel}>Trafiknotiser vid</Text>
+              <Text style={styles.preferenceHelper}>Välj minsta allvar för att trigga en notis.</Text>
+              <View style={styles.chipRow}>
+                {IMPACT_OPTIONS.map(option => (
+                  <Pressable
+                    key={option}
+                    onPress={() => profile.setPreferences({ impactThreshold: option })}
+                    style={({ pressed }) => [
+                      styles.preferenceChip,
+                      profile.preferences.impactThreshold === option && {
+                        borderColor: accentColor,
+                        backgroundColor: 'rgba(255,255,255,0.12)',
+                      },
+                      pressed && styles.preferenceChipPressed,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.preferenceChipText,
+                        profile.preferences.impactThreshold === option && { color: '#fff' },
+                      ]}
+                    >
+                      {IMPACT_LABELS[option]}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
             </View>
           </View>
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Respreferenser</Text>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Respreferenser</Text>
+              <Text style={styles.sectionSub}>Svaren styr AI-sortering tillsammans med plats</Text>
+            </View>
             <View style={styles.preferenceCard}>
               <Text style={styles.preferenceLabel}>Pendlingstid</Text>
               <View style={styles.chipRow}>
@@ -559,34 +763,6 @@ export function ProfilePanel({
                       ]}
                     >
                       {option}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-            <View style={styles.preferenceCard}>
-              <Text style={styles.preferenceLabel}>Push vid påverkan</Text>
-              <View style={styles.chipRow}>
-                {IMPACT_OPTIONS.map(option => (
-                  <Pressable
-                    key={option}
-                    onPress={() => profile.setPreferences({ impactThreshold: option })}
-                    style={({ pressed }) => [
-                      styles.preferenceChip,
-                      profile.preferences.impactThreshold === option && {
-                        borderColor: accentColor,
-                        backgroundColor: 'rgba(255,255,255,0.12)',
-                      },
-                      pressed && styles.preferenceChipPressed,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.preferenceChipText,
-                        profile.preferences.impactThreshold === option && { color: '#fff' },
-                      ]}
-                    >
-                      {IMPACT_LABELS[option]}
                     </Text>
                   </Pressable>
                 ))}
@@ -620,6 +796,140 @@ export function ProfilePanel({
                 ))}
               </View>
             </View>
+            {profile.user.authenticated ? (
+              <View style={styles.preferenceCard}>
+                <Text style={styles.preferenceLabel}>Vad ska vi prioritera?</Text>
+                <Text style={styles.preferenceHelper}>
+                  AI väger dessa intressen tillsammans med din plats för att visa viktigast först.
+                </Text>
+                <View style={styles.chipRow}>
+                  {INTEREST_TOPICS.map(topic => {
+                    const selected = interestTopics.includes(topic.key);
+                    return (
+                      <Pressable
+                        key={topic.key}
+                        onPress={() => handleToggleInterest(topic.key)}
+                        style={({ pressed }) => [
+                          styles.preferenceChip,
+                          selected && {
+                            borderColor: accentColor,
+                            backgroundColor: 'rgba(255,255,255,0.12)',
+                          },
+                          pressed && styles.preferenceChipPressed,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.preferenceChipText,
+                            selected && { color: '#fff' },
+                          ]}
+                        >
+                          {topic.label}
+                        </Text>
+                        <Text style={styles.preferenceChipHint}>{topic.hint}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : (
+              <View style={styles.preferenceCard}>
+                <Text style={styles.preferenceLabel}>Personliga intressen</Text>
+                <Text style={styles.preferenceHelper}>
+                  Logga in för att berätta vad som är viktigt så att vi kan prio-sätta din trafikinfo.
+                </Text>
+              </View>
+            )}
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Relaterad trafikinformation</Text>
+              <Text style={styles.sectionSub}>AI väljer ut händelser nära dig och dina val</Text>
+            </View>
+
+            {!isLocationEnabled ? (
+              <View style={styles.infoBanner}>
+                <View style={styles.infoBannerHeader}>
+                  <Text style={styles.infoBannerTitle}>Bäst med plats aktiverad</Text>
+                  <Text style={styles.infoBannerText}>
+                    Vi utgår alltid från din position och kompletterar med dina preferenser.
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={requestLocationPermission}
+                  disabled={!canRequestLocation}
+                  style={({ pressed }) => [
+                    styles.infoBannerAction,
+                    pressed && styles.permissionButtonPressed,
+                    !canRequestLocation && styles.permissionButtonDisabled,
+                  ]}
+                >
+                  <Text style={styles.permissionButtonText}>Aktivera plats</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {trafficLoading ? (
+              <View style={styles.loadingSection}>
+                <ActivityIndicator color="#fff" />
+                <Text style={styles.loadingLabel}>Letar efter trafik nära dig…</Text>
+              </View>
+            ) : null}
+
+            {trafficError ? <Text style={styles.permissionReason}>{trafficError}</Text> : null}
+
+            {recommendedEvents.length === 0 && !trafficLoading ? (
+              <View style={styles.placeholderCard}>
+                <Text style={styles.placeholderTitle}>Inga relevanta händelser just nu</Text>
+                <Text style={styles.placeholderText}>
+                  Vi visar upp till tre störningar som matchar din plats och dina svar.
+                </Text>
+              </View>
+            ) : null}
+
+            {recommendedEvents.map(({ event, distanceKm }) => {
+              const aiSummary = trafficSummaries[event.id];
+              return (
+                <View key={`traffic-${event.id}`} style={styles.trafficCard}>
+                  <View style={styles.trafficCardHeader}>
+                    <View style={styles.trafficBadge}>
+                      <Text style={styles.trafficBadgeLabel}>AI-vald</Text>
+                    </View>
+                    <Text style={styles.trafficDistance}>
+                      {typeof distanceKm === 'number'
+                        ? formatDistanceLabel(distanceKm)
+                        : 'Dela plats för exakt läge'}
+                    </Text>
+                  </View>
+                  <Text style={styles.trafficTitle}>{event.title}</Text>
+                  <Text style={styles.trafficMeta}>
+                    {IMPACT_LABELS[event.severity]}
+                    {event.impactLabel ? ` · ${event.impactLabel}` : ''}
+                    {event.segment ? ` · ${event.segment}` : ''}
+                  </Text>
+                  {aiSummary?.summary ? (
+                    <Text style={styles.trafficSummary}>{aiSummary.summary}</Text>
+                  ) : event.description ? (
+                    <Text style={styles.trafficSummary}>{event.description}</Text>
+                  ) : null}
+                  {aiSummary?.advice ? (
+                    <Text style={styles.trafficAdvice}>{aiSummary.advice}</Text>
+                  ) : null}
+                  <View style={styles.trafficFooter}>
+                    <View
+                      style={[
+                        styles.eventSeverityDot,
+                        { backgroundColor: SEVERITY_COLORS[event.severity as ImpactLevel] },
+                      ]}
+                    />
+                    <Text style={styles.trafficFooterText}>
+                      Plats + {interestTopics.length ? 'intressen' : 'inställningar'} styr prioritering
+                    </Text>
+                  </View>
+                </View>
+              );
+            })}
           </View>
 
           <View style={styles.section}>
@@ -745,6 +1055,12 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#fff',
+  },
+  heroTierLabel: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.5)',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
   heroTier: {
     fontSize: 12,
@@ -1004,6 +1320,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+  permissionGrid: {
+    gap: 10,
+  },
   permissionCard: {
     borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
@@ -1032,6 +1351,14 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.55)',
     fontSize: 11,
   },
+  permissionHint: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 11,
+  },
+  permissionControls: {
+    alignItems: 'flex-end',
+    gap: 8,
+  },
   permissionButton: {
     paddingVertical: 6,
     paddingHorizontal: 16,
@@ -1040,8 +1367,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.2)',
     backgroundColor: 'rgba(255,255,255,0.06)',
   },
+  permissionMiniButton: {
+    paddingHorizontal: 12,
+  },
   permissionButtonPressed: {
     backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  permissionButtonDisabled: {
+    opacity: 0.5,
   },
   permissionButtonText: {
     color: '#fff',
@@ -1060,6 +1393,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: 'rgba(255,255,255,0.75)',
   },
+  preferenceHelper: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.55)',
+    lineHeight: 16,
+  },
   chipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1072,15 +1410,120 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     backgroundColor: 'rgba(255,255,255,0.02)',
+    gap: 2,
   },
   preferenceChipPressed: {
     opacity: 0.7,
   },
- preferenceChipText: {
-   color: 'rgba(255,255,255,0.65)',
-   fontSize: 12,
-   fontWeight: '600',
- },
+  preferenceChipText: {
+    color: 'rgba(255,255,255,0.65)',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  preferenceChipHint: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 10,
+  },
+  infoBanner: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(6,12,24,0.65)',
+    padding: 12,
+    gap: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  infoBannerHeader: {
+    flex: 1,
+    gap: 4,
+  },
+  infoBannerTitle: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  infoBannerText: {
+    color: 'rgba(255,255,255,0.65)',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  infoBannerAction: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    alignSelf: 'center',
+  },
+  trafficCard: {
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(6,12,24,0.58)',
+    padding: 14,
+    gap: 8,
+  },
+  trafficCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  trafficBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  trafficBadgeLabel: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  trafficDistance: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 12,
+  },
+  trafficTitle: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  trafficMeta: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 12,
+  },
+  trafficSummary: {
+    color: 'rgba(255,255,255,0.82)',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  trafficAdvice: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 12,
+    fontStyle: 'italic',
+  },
+  eventSeverityDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  trafficFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 2,
+  },
+  trafficFooterText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 11,
+  },
   supportCard: {
     borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
