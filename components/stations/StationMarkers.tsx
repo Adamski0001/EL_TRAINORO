@@ -82,7 +82,7 @@ function StationMarkersComponent({ stations, selectedStationId, onSelectStation,
     <>
       {stations.map(station => (
         <StationMarker
-          key={station.id}
+          key={`station-${station.id}`}
           station={station}
           selected={station.id === selectedStationId}
           onSelectStation={onSelectStation}

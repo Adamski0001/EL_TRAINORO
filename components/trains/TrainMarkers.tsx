@@ -90,11 +90,31 @@ function TrainMarkersComponent({ trains, selectedTrainId, onSelectTrain, viewpor
     return filtered;
   }, [trains, viewportRegion]);
 
+  const uniqueTrains = useMemo(() => {
+    if (!visibleTrains.length) {
+      return visibleTrains;
+    }
+    const byId = new Map<string, TrainPosition>();
+    for (const train of visibleTrains) {
+      const existing = byId.get(train.id);
+      if (!existing) {
+        byId.set(train.id, train);
+        continue;
+      }
+      const existingMs = Date.parse(existing.updatedAt);
+      const nextMs = Date.parse(train.updatedAt);
+      if (Number.isNaN(existingMs) || Number.isNaN(nextMs) || nextMs >= existingMs) {
+        byId.set(train.id, train);
+      }
+    }
+    return Array.from(byId.values());
+  }, [visibleTrains]);
+
   return (
     <>
-      {visibleTrains.map(train => (
+      {uniqueTrains.map(train => (
         <TrainMarker
-          key={train.id}
+          key={`train-${train.id}`}
           train={train}
           selected={train.id === selectedTrainId}
           onSelectTrain={onSelectTrain}

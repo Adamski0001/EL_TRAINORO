@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "TRAINAR-APP",
-    "slug": "TRAINAR-APP",
+    "slug": "trainar",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -25,6 +25,12 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "3c99d02b-659e-4c60-9ec5-b5e3e38efdb1"
+      }
+    },
+    "owner": "trainars-organization"
   }
 }
