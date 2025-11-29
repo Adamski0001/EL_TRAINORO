@@ -30,6 +30,7 @@ import { useNotificationPermission } from '../../hooks/useNotificationPermission
 import { useReloadApp, useReloadInfo } from '../../contexts/ReloadContext';
 import { useUserLocation } from '../../hooks/useUserLocation';
 import { useUserProfile } from '../../hooks/useUserProfile';
+import { getSupabaseClient, isSupabaseConfigured } from '../../lib/supabaseClient';
 import type { TrainPosition } from '../../types/trains';
 import type { TrafficSheetSnapPoint } from '../traffic/sheetSnapPoints';
 import { haptics } from '../../lib/haptics';
@@ -60,6 +61,7 @@ type ProfilePanelProps = {
   onClose: () => void;
   onSnapPointChange?: (point: TrafficSheetSnapPoint) => void;
   onOpenTrain: (train: TrainPosition) => void;
+  onRequestAuth?: () => void;
 };
 
 const formatRelativeTime = (timestamp: number) => {
@@ -81,6 +83,7 @@ export function ProfilePanel({
   onClose,
   onSnapPointChange,
   onOpenTrain,
+  onRequestAuth,
 }: ProfilePanelProps) {
   const insets = useSafeAreaInsets();
   const translateY = useSharedValue(SHEET_SNAP_POINTS.hidden);
@@ -89,6 +92,7 @@ export function ProfilePanel({
   const onSnapPointChangeRef = useRef(onSnapPointChange);
   const [notificationRequesting, setNotificationRequesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [logoutInProgress, setLogoutInProgress] = useState(false);
 
   const profile = useUserProfile();
   const { items } = useTrainSearchIndex();
@@ -107,7 +111,10 @@ export function ProfilePanel({
   const reloadApp = useReloadApp();
   const { lastReloadedAt } = useReloadInfo();
 
-  const accentColor = useMemo(() => deriveAccentColor(profile.user.id), [profile.user.id]);
+  const accentColor = useMemo(
+    () => profile.user.accentColor || deriveAccentColor(profile.user.id),
+    [profile.user.accentColor, profile.user.id],
+  );
   const isNotificationEnabled = notificationStatus === 'granted';
   const isLocationEnabled = locationPermission === 'granted';
   const membershipLabel = useMemo(
@@ -219,10 +226,35 @@ export function ProfilePanel({
     }
   }, [profile, reloadApp]);
 
-  const handleLogin = useCallback(() => {
+  const handleOpenAuth = useCallback(() => {
     haptics.medium();
-    Linking.openURL('https://trainar.app/login').catch(error => console.warn('[ProfilePanel] login', error));
-  }, []);
+    onRequestAuth?.();
+  }, [onRequestAuth]);
+
+  const handleLogout = useCallback(async () => {
+    if (logoutInProgress) {
+      return;
+    }
+    haptics.medium();
+    setLogoutInProgress(true);
+    try {
+      if (isSupabaseConfigured) {
+        const supabase = getSupabaseClient();
+        await supabase.auth.signOut();
+      }
+    } catch (error) {
+      console.warn('[ProfilePanel] logout failed', error);
+    } finally {
+      profile.setUserInfo({
+        id: 'guest',
+        name: null,
+        tier: 'Fri medlem',
+        authenticated: false,
+        accentColor: null,
+      });
+      setLogoutInProgress(false);
+    }
+  }, [logoutInProgress, profile]);
 
   const formatStatusMessage = useMemo(() => {
     if (profile.loading) {
@@ -407,10 +439,24 @@ export function ProfilePanel({
           </View>
 
           {!profile.user.authenticated ? (
-            <Pressable onPress={handleLogin} style={styles.loginButton}>
+            <Pressable onPress={handleOpenAuth} style={styles.loginButton}>
               <Text style={styles.loginButtonText}>Logga in / skapa konto</Text>
             </Pressable>
-          ) : null}
+          ) : (
+            <Pressable
+              onPress={handleLogout}
+              disabled={logoutInProgress}
+              style={({ pressed }) => [
+                styles.logoutButton,
+                pressed && styles.logoutButtonPressed,
+                logoutInProgress && styles.logoutButtonDisabled,
+              ]}
+            >
+              <Text style={styles.logoutButtonText}>
+                {logoutInProgress ? 'Loggar ut…' : 'Logga ut'}
+              </Text>
+            </Pressable>
+          )}
 
           <View style={styles.quickRow}>
             <View style={styles.quickCard}>
@@ -782,6 +828,26 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
     fontSize: 13,
+  },
+  logoutButton: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  logoutButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  logoutButtonPressed: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  logoutButtonDisabled: {
+    opacity: 0.6,
   },
   quickRow: {
     flexDirection: 'row',

@@ -29,6 +29,7 @@ export type ProfileUserInfo = {
   name: string | null;
   tier: string;
   authenticated: boolean;
+  accentColor: string | null;
 };
 
 export type ProfileStoreState = {
@@ -54,6 +55,7 @@ const DEFAULT_USER: ProfileUserInfo = {
   name: null,
   tier: 'Fri medlem',
   authenticated: false,
+  accentColor: null,
 };
 
 const DEFAULT_STATE: ProfileStoreState = {

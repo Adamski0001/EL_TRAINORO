@@ -9,6 +9,7 @@ export type ProfilePanelContainerProps = {
   onClose: () => void;
   onSnapPointChange?: (point: TrafficSheetSnapPoint) => void;
   onOpenTrain: (train: TrainPosition) => void;
+  onRequestAuth?: () => void;
 };
 
 function ProfilePanelContainerComponent({
@@ -17,6 +18,7 @@ function ProfilePanelContainerComponent({
   onClose,
   onSnapPointChange,
   onOpenTrain,
+  onRequestAuth,
 }: ProfilePanelContainerProps) {
   const [mounted, setMounted] = useState(visible);
 
@@ -42,6 +44,7 @@ function ProfilePanelContainerComponent({
       onClose={handlePanelClose}
       onSnapPointChange={onSnapPointChange}
       onOpenTrain={onOpenTrain}
+      onRequestAuth={onRequestAuth}
     />
   );
 }

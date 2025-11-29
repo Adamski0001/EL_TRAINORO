@@ -29,7 +29,11 @@ import { useFrameRateLogger } from './hooks/useFrameRateLogger';
 import { useNotificationPermission } from './hooks/useNotificationPermission';
 import type { Station } from './types/stations';
 import type { TrainPosition } from './types/trains';
-import { OnboardingOverlay, type OnboardingAnswers } from './components/onboarding/OnboardingOverlay';
+import {
+  OnboardingOverlay,
+  type OnboardingAnswers,
+  type OnboardingStage,
+} from './components/onboarding/OnboardingOverlay';
 import { haptics } from './lib/haptics';
 
 const trainarLogo = require('./assets/images/trainar-logo.png');
@@ -88,6 +92,8 @@ function AppContent() {
   const [stationSnap, setStationSnap] = useState<TrafficSheetSnapPoint>('hidden');
   const [mapFocusRequest, setMapFocusRequest] = useState<MapFocusRequest | null>(null);
   const onboardingContextRef = useRef<OnboardingAnswers | null>(null);
+  const [authOverlayVisible, setAuthOverlayVisible] = useState(false);
+  const [onboardingStartStage, setOnboardingStartStage] = useState<OnboardingStage>('typing');
   const navTranslateY = useSharedValue(0);
   useFrameRateLogger('root', PERF_LOGGING_ENABLED);
   const { status: notificationStatus, request: requestNotificationPermission } = useNotificationPermission();
@@ -226,6 +232,18 @@ function AppContent() {
     setActiveNav('home');
   }, [setActiveNav, setPrimaryNav, setProfileSheetVisible, setProfileSnap]);
 
+  const handleRequestAuthOverlay = useCallback(
+    (startStage: OnboardingStage = 'options') => {
+      setProfileSheetVisible(false);
+      setProfileSnap('hidden');
+      setPrimaryNav('home');
+      setActiveNav('home');
+      setOnboardingStartStage(startStage);
+      setAuthOverlayVisible(true);
+    },
+    [setActiveNav, setPrimaryNav],
+  );
+
   const handleTrainSheetClose = useCallback(() => {
     setTrainSheetVisible(false);
     setTrainSnap('hidden');
@@ -295,6 +313,7 @@ function AppContent() {
       onboardingContextRef.current = answers;
     }
     setOnboardingComplete(true);
+    setAuthOverlayVisible(false);
     AsyncStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({ completed: true, answers: nextAnswers }),
@@ -348,6 +367,7 @@ function AppContent() {
             onSnapPointChange={setProfileSnap}
             onClose={handleProfileSheetClose}
             onOpenTrain={handleOpenTrainFromProfile}
+            onRequestAuth={handleRequestAuthOverlay}
           />
           <Animated.View
             pointerEvents="box-none"
@@ -366,8 +386,12 @@ function AppContent() {
               setActiveNav(primaryNav);
             }}
           />
-          {!onboardingLoading && !onboardingComplete && (
-            <OnboardingOverlay onComplete={handleOnboardingComplete} />
+          {!onboardingLoading && (!onboardingComplete || authOverlayVisible) && (
+            <OnboardingOverlay
+              onComplete={handleOnboardingComplete}
+              initialAnswers={onboardingContextRef.current ?? undefined}
+              startStage={authOverlayVisible ? onboardingStartStage : 'typing'}
+            />
           )}
         </View>
       </SafeAreaProvider>

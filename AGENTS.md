@@ -52,6 +52,9 @@ Environment variables are provided via `.env` and Expo:
 - `TRAFIKVERKET_API_KEY`
 - `EXPO_PUBLIC_TRAFIKVERKET_API_KEY`
 - `EXPO_PUBLIC_API_BASE_URL`
+- `EXPO_PUBLIC_SUPABASE_URL`
+- `EXPO_PUBLIC_SUPABASE_ANON_KEY`
+- `EXPO_PUBLIC_SUPABASE_PASSWORD_REDIRECT` (optional, for password reset links)
 - Potentially more – read `.env.example` or existing `.env` usage.
 
 **Rules for env handling**

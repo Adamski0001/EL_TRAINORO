@@ -1,4 +1,5 @@
 import { BlurView } from 'expo-blur';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -12,6 +13,9 @@ import {
   View,
 } from 'react-native';
 
+import { useUserProfile } from '../../hooks/useUserProfile';
+import { getSupabaseClient, isSupabaseConfigured } from '../../lib/supabaseClient';
+
 const WELCOME_TEXT = 'Welcome to TRAINAR!';
 const LETTER_INTERVAL_MS = 90;
 const INTRO_HOLD_DURATION_MS = 5000;
@@ -20,6 +24,32 @@ const WHITEOUT_DURATION_MS = 1500;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LENGTH = 6;
 const MIN_LOGIN_PASSWORD_LENGTH = 6;
+const COLOR_OPTIONS = [
+  '#ff0000',
+  '#ff5a00',
+  '#ff9a00',
+  '#ffd000',
+  '#f3ff00',
+  '#b6ff00',
+  '#6aff00',
+  '#21ff00',
+  '#00ff55',
+  '#00ff9d',
+  '#00ffd8',
+  '#00e5ff',
+  '#00a8ff',
+  '#006bff',
+  '#0027ff',
+  '#2b00ff',
+  '#6f00ff',
+  '#a700ff',
+  '#e000ff',
+  '#ff00d4',
+  '#ff0091',
+  '#ff0050',
+  '#ff3366',
+  '#ff6685',
+];
 
 const QUESTIONS = [
   { key: 'name', label: "What's your name?", placeholder: 'Name' },
@@ -27,6 +57,11 @@ const QUESTIONS = [
     key: 'interest',
     label: 'Why are you interested in TRAINAR?',
     placeholder: 'Share a sentence or two',
+  },
+  {
+    key: 'favoriteColor',
+    label: 'Välj din favoritfärg',
+    placeholder: '',
   },
   {
     key: 'travelHabits',
@@ -48,10 +83,12 @@ type StageView = 'welcome' | 'whiteout' | 'options' | 'createAccount' | 'login' 
 type QuestionKey = (typeof QUESTIONS)[number]['key'];
 
 export type OnboardingAnswers = Record<QuestionKey, string>;
+export type OnboardingStage = Stage;
 
 type Props = {
   onComplete: (answers?: OnboardingAnswers) => void;
   initialAnswers?: Partial<OnboardingAnswers>;
+  startStage?: Stage;
 };
 
 const createInitialAnswers = (initial?: Partial<OnboardingAnswers>): OnboardingAnswers =>
@@ -63,8 +100,61 @@ const createInitialAnswers = (initial?: Partial<OnboardingAnswers>): OnboardingA
     {} as OnboardingAnswers,
   );
 
-export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
-  const [stage, setStage] = useState<Stage>('typing');
+const sanitizeFavoriteColor = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(trimmed)) {
+    return trimmed;
+  }
+  return trimmed;
+};
+
+const resolveAccentColor = (preferred: string | null, seed: string) =>
+  sanitizeFavoriteColor(preferred) ?? COLOR_OPTIONS[Math.abs(seed.length) % COLOR_OPTIONS.length];
+
+const persistAccountProfile = async (
+  supabase: SupabaseClient,
+  payload: {
+    userId?: string | null;
+    fullName?: string | null;
+    email?: string | null;
+    favoriteColor?: string | null;
+  },
+) => {
+  const trimmedName = payload.fullName?.trim();
+  if (!payload.userId || !trimmedName) {
+    return;
+  }
+  try {
+    const { error } = await supabase
+      .from('accounts')
+      .upsert(
+        {
+          id: payload.userId,
+          full_name: trimmedName,
+          email: payload.email ?? null,
+          favorite_color: payload.favoriteColor ?? null,
+        },
+        { onConflict: 'id' },
+      );
+    if (error) {
+      console.warn('[Onboarding] Failed to persist account profile', error);
+    }
+  } catch (error) {
+    console.warn('[Onboarding] Persist account profile threw', error);
+  }
+};
+
+export const OnboardingOverlay = ({ onComplete, initialAnswers, startStage }: Props) => {
+  const profile = useUserProfile();
+  const [stage, setStage] = useState<Stage>(
+    startStage ?? (initialAnswers?.name ? 'options' : 'typing'),
+  );
   const [answers, setAnswers] = useState<OnboardingAnswers>(() => createInitialAnswers(initialAnswers));
   const [typedText, setTypedText] = useState('');
   const welcomeOpacity = useRef(new Animated.Value(1)).current;
@@ -77,6 +167,10 @@ export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
     password: '',
   });
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [authSubmitting, setAuthSubmitting] = useState<'login' | 'signup' | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [signupError, setSignupError] = useState<string | null>(null);
+  const [signupNotice, setSignupNotice] = useState<string | null>(null);
   const [forgotPasswordNotice, setForgotPasswordNotice] = useState<string | null>(null);
   const stageView = useMemo<StageView>(() => {
     if (stage === 'typing' || stage === 'hold' || stage === 'blur') {
@@ -99,6 +193,7 @@ export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
       },
     ],
   };
+  const supabaseConfigured = isSupabaseConfigured;
 
   useEffect(() => {
     if (stage !== 'typing') {
@@ -168,6 +263,13 @@ export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
     });
   }, [stageView, displayStageView, stageOpacity]);
 
+  useEffect(() => {
+    setLoginError(null);
+    setSignupError(null);
+    setSignupNotice(null);
+    setForgotPasswordNotice(null);
+  }, [displayStageView]);
+
   const answeredAll = useMemo(
     () => QUESTIONS.every(question => answers[question.key].trim().length > 0),
     [answers],
@@ -180,11 +282,70 @@ export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
     }));
   };
 
-  const handleCompleteWithAnswers = () => {
-    if (!answeredAll) {
+  const handleCompleteWithAnswers = async () => {
+    if (!answeredAll || authSubmitting) {
       return;
     }
-    completeWithFade(answers);
+    if (!supabaseConfigured) {
+      console.warn('[Onboarding] Supabase is not configured, completing onboarding as guest.');
+      completeWithFade(answers);
+      return;
+    }
+    setAuthSubmitting('signup');
+    setSignupError(null);
+    setSignupNotice(null);
+    try {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase.auth.signUp({
+        email: accountForm.email.trim(),
+        password: accountForm.password.trim(),
+        options: {
+          data: {
+            name: accountForm.name.trim(),
+            onboardingAnswers: answers,
+            favoriteColor: sanitizeFavoriteColor(answers.favoriteColor),
+          },
+        },
+      });
+      if (error) {
+        setSignupError(error.message);
+        return;
+      }
+      const user = data.user;
+      const hasSession = Boolean(data.session);
+      const trimmedName = accountForm.name.trim();
+      const accentColor = resolveAccentColor(sanitizeFavoriteColor(answers.favoriteColor), user?.id ?? 'pending');
+      const displayName = trimmedName || user?.email || 'Member';
+      profile.setUserInfo({
+        id: user?.id ?? 'pending',
+        name: displayName,
+        tier: 'Fri medlem',
+        authenticated: hasSession,
+        accentColor,
+      });
+      if (hasSession) {
+        await persistAccountProfile(supabase, {
+          userId: user?.id,
+          fullName: trimmedName,
+          email: user?.email ?? accountForm.email.trim(),
+          favoriteColor: accentColor,
+        });
+        completeWithFade(answers);
+        return;
+      }
+      setSignupNotice('Väntar på e-postverifiering. Öppna länken i mejlet för att logga in.');
+      setStage('login');
+      setLoginForm({
+        email: accountForm.email.trim(),
+        password: accountForm.password.trim(),
+      });
+      return;
+    } catch (error) {
+      console.warn('[Onboarding] Signup failed', error);
+      setSignupError('Could not create your account right now. Please try again.');
+    } finally {
+      setAuthSubmitting(null);
+    }
   };
 
   const completeWithFade = (nextAnswers?: OnboardingAnswers) => {
@@ -212,7 +373,10 @@ export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
     setStage('questions');
   };
 
-  const handleForgotPassword = () => {
+  const handleForgotPassword = async () => {
+    if (authSubmitting) {
+      return;
+    }
     const trimmedEmail = loginForm.email.trim();
     if (!trimmedEmail) {
       setForgotPasswordNotice('Enter your email to reset your password.');
@@ -222,14 +386,79 @@ export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
       setForgotPasswordNotice('Enter a valid email address to reset your password.');
       return;
     }
-    setForgotPasswordNotice(`Password reset link sent to ${trimmedEmail}.`);
-  };
-
-  const handleLogin = () => {
-    if (!loginFormReady) {
+    if (!supabaseConfigured) {
+      setForgotPasswordNotice('Supabase is not configured yet.');
       return;
     }
-    completeWithFade();
+    try {
+      const supabase = getSupabaseClient();
+      const { error } = await supabase.auth.resetPasswordForEmail(trimmedEmail, {
+        redirectTo: process.env.EXPO_PUBLIC_SUPABASE_PASSWORD_REDIRECT,
+      });
+      if (error) {
+        setForgotPasswordNotice(error.message);
+        return;
+      }
+      setForgotPasswordNotice(`Password reset link sent to ${trimmedEmail}.`);
+    } catch (error) {
+      console.warn('[Onboarding] Password reset failed', error);
+      setForgotPasswordNotice('Could not send reset link right now. Try again.');
+    }
+  };
+
+  const handleLogin = async () => {
+    if (!loginFormReady || authSubmitting) {
+      return;
+    }
+    if (!supabaseConfigured) {
+      console.warn('[Onboarding] Supabase is not configured, completing onboarding as guest.');
+      completeWithFade();
+      return;
+    }
+    setAuthSubmitting('login');
+    setLoginError(null);
+    setForgotPasswordNotice(null);
+    try {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: loginForm.email.trim(),
+        password: loginForm.password.trim(),
+      });
+      if (error) {
+        setLoginError(error.message);
+        return;
+      }
+      const user = data.user;
+      const metadataName = (user?.user_metadata as { name?: string } | null)?.name?.trim() ?? '';
+      const metadataColor =
+        (user?.user_metadata as { favoriteColor?: string } | null)?.favoriteColor ?? null;
+      const suppliedName = accountForm.name.trim();
+      const resolvedName = metadataName || suppliedName;
+      const userName = resolvedName || user?.email || 'Member';
+      const accentColor = resolveAccentColor(
+        sanitizeFavoriteColor(metadataColor ?? answers.favoriteColor),
+        user?.id ?? 'unknown',
+      );
+      profile.setUserInfo({
+        id: user?.id ?? 'unknown',
+        name: userName,
+        tier: 'Fri medlem',
+        authenticated: true,
+        accentColor,
+      });
+      await persistAccountProfile(supabase, {
+        userId: user?.id,
+        fullName: resolvedName,
+        email: user?.email ?? loginForm.email.trim(),
+        favoriteColor: accentColor,
+      });
+      completeWithFade();
+    } catch (error) {
+      console.warn('[Onboarding] Login failed', error);
+      setLoginError('Could not log in right now. Try again.');
+    } finally {
+      setAuthSubmitting(null);
+    }
   };
 
   const accountEmailInvalid =
@@ -251,6 +480,8 @@ export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
     loginForm.password.trim().length > 0 &&
     !loginEmailInvalid &&
     !loginPasswordInvalid;
+  const signingIn = authSubmitting === 'login';
+  const signingUp = authSubmitting === 'signup';
   const isFormStage =
     displayStageView === 'createAccount' ||
     displayStageView === 'login' ||
@@ -422,19 +653,25 @@ export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
               <Text style={styles.notice}>{forgotPasswordNotice}</Text>
             ) : null}
             <Pressable
-              disabled={!loginFormReady}
+              disabled={!loginFormReady || signingIn}
               style={({ pressed }) => [
                 styles.primaryButton,
                 styles.questionsButton,
-                !loginFormReady && styles.disabledButton,
-                pressed && loginFormReady && styles.primaryButtonPressed,
+                (!loginFormReady || signingIn) && styles.disabledButton,
+                pressed && loginFormReady && !signingIn && styles.primaryButtonPressed,
               ]}
               onPress={handleLogin}
             >
-              <Text style={[styles.primaryButtonLabel, !loginFormReady && styles.disabledButtonLabel]}>
-                Log In
+              <Text
+                style={[
+                  styles.primaryButtonLabel,
+                  (!loginFormReady || signingIn) && styles.disabledButtonLabel,
+                ]}
+              >
+                {signingIn ? 'Logging in…' : 'Log In'}
               </Text>
             </Pressable>
+            {loginError ? <Text style={styles.errorText}>{loginError}</Text> : null}
           </ScrollView>
         </KeyboardAvoidingView>
       );
@@ -456,32 +693,65 @@ export const OnboardingOverlay = ({ onComplete, initialAnswers }: Props) => {
           {QUESTIONS.map(question => (
             <View key={question.key} style={styles.questionBlock}>
               <Text style={styles.questionLabel}>{question.label}</Text>
-              <TextInput
-                style={styles.input}
-                placeholder={question.placeholder}
-                placeholderTextColor="#B0B0B0"
-                value={answers[question.key]}
-                onChangeText={value => handleAnswerChange(question.key, value)}
-                multiline={question.key !== 'name'}
-                autoCorrect
-                autoCapitalize={question.key === 'name' ? 'words' : 'sentences'}
-              />
+              {question.key === 'favoriteColor' ? (
+                <View style={styles.colorPicker}>
+                  <ScrollView
+                    horizontal={false}
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={styles.colorOptions}
+                  >
+                    <View style={styles.colorGrid}>
+                      {COLOR_OPTIONS.map(color => {
+                        const isSelected =
+                          answers.favoriteColor.trim().toLowerCase() === color.toLowerCase();
+                        return (
+                          <Pressable
+                            key={color}
+                            onPress={() => handleAnswerChange('favoriteColor', color)}
+                            style={[styles.colorSwatch, { backgroundColor: color }, isSelected && styles.colorSwatchSelected]}
+                          >
+                            {isSelected ? <Text style={styles.colorSwatchLabel}>✓</Text> : null}
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </ScrollView>
+                </View>
+              ) : (
+                <TextInput
+                  style={styles.input}
+                  placeholder={question.placeholder}
+                  placeholderTextColor="#B0B0B0"
+                  value={answers[question.key]}
+                  onChangeText={value => handleAnswerChange(question.key, value)}
+                  multiline={question.key !== 'name'}
+                  autoCorrect
+                  autoCapitalize={question.key === 'name' ? 'words' : 'sentences'}
+                />
+              )}
             </View>
           ))}
           <Pressable
-            disabled={!answeredAll}
+            disabled={!answeredAll || signingUp}
             style={({ pressed }) => [
               styles.primaryButton,
               styles.questionsButton,
-              !answeredAll && styles.disabledButton,
-              pressed && answeredAll && styles.primaryButtonPressed,
+              (!answeredAll || signingUp) && styles.disabledButton,
+              pressed && answeredAll && !signingUp && styles.primaryButtonPressed,
             ]}
             onPress={handleCompleteWithAnswers}
           >
-            <Text style={[styles.primaryButtonLabel, !answeredAll && styles.disabledButtonLabel]}>
-              Save & Continue
+            <Text
+              style={[
+                styles.primaryButtonLabel,
+                (!answeredAll || signingUp) && styles.disabledButtonLabel,
+              ]}
+            >
+              {signingUp ? 'Creating account…' : 'Save & Continue'}
             </Text>
           </Pressable>
+          {signupError ? <Text style={styles.errorText}>{signupError}</Text> : null}
+          {signupNotice ? <Text style={styles.notice}>{signupNotice}</Text> : null}
         </ScrollView>
       </KeyboardAvoidingView>
     );
@@ -680,5 +950,33 @@ const styles = StyleSheet.create({
   },
   disabledButtonLabel: {
     color: '#FAFAFA',
+  },
+  colorPicker: {
+    gap: 10,
+  },
+  colorOptions: {
+    paddingVertical: 2,
+  },
+  colorSwatch: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E1E1E1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  colorSwatchSelected: {
+    borderColor: '#050505',
+    borderWidth: 2,
+  },
+  colorSwatchLabel: {
+    color: '#050505',
+    fontWeight: '700',
+  },
+  colorGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
   },
 });
