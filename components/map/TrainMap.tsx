@@ -66,6 +66,7 @@ function TrainMapComponent({
   const mapRef = useRef<MapView | null>(null);
   const stationOpacity = useRef(new Animated.Value(initialStationVisibility ? 1 : 0)).current;
   const [stationZoomVisible, setStationZoomVisible] = useState(initialStationVisibility);
+  const [currentRegion, setCurrentRegion] = useState<Region>(initialRegion);
 
   useEffect(() => {
     Animated.timing(stationOpacity, {
@@ -78,6 +79,7 @@ function TrainMapComponent({
 
   const handleRegionChangeComplete = useCallback((region: Region) => {
     setStationZoomVisible(shouldShowStationsForDelta(region.latitudeDelta));
+    setCurrentRegion(region);
   }, []);
 
   useEffect(() => {
@@ -144,6 +146,7 @@ function TrainMapComponent({
           trains={trains}
           selectedTrainId={selectedTrainId}
           onSelectTrain={onSelectTrain}
+          viewportRegion={currentRegion}
         />
       </MapView>
       <View pointerEvents="none" style={styles.overlay} />
