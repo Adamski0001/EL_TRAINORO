@@ -178,7 +178,7 @@ function AppContent() {
 
   const handleSelectTrain = useCallback(
     (train: TrainPosition) => {
-      openTrainDetails(train);
+      openTrainDetails(train, { focus: true });
     },
     [openTrainDetails],
   );

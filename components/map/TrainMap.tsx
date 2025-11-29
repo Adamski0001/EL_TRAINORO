@@ -25,6 +25,7 @@ type TrainMapProps = {
 };
 
 const STATION_VISIBILITY_ZOOM_LEVEL = 8.2;
+const MAP_FOCUS_MAX_DELTA = 1.2;
 
 const DARK_MAP_STYLE: MapStyleElement[] = [
   { elementType: 'geometry', stylers: [{ color: '#0a0f1f' }] },
@@ -64,6 +65,7 @@ function TrainMapComponent({
 }: TrainMapProps) {
   const initialStationVisibility = shouldShowStationsForDelta(initialRegion.latitudeDelta);
   const mapRef = useRef<MapView | null>(null);
+  const currentRegionRef = useRef<Region>(initialRegion);
   const stationOpacity = useRef(new Animated.Value(initialStationVisibility ? 1 : 0)).current;
   const [stationZoomVisible, setStationZoomVisible] = useState(initialStationVisibility);
   const [currentRegion, setCurrentRegion] = useState<Region>(initialRegion);
@@ -80,6 +82,7 @@ function TrainMapComponent({
   const handleRegionChangeComplete = useCallback((region: Region) => {
     setStationZoomVisible(shouldShowStationsForDelta(region.latitudeDelta));
     setCurrentRegion(region);
+    currentRegionRef.current = region;
   }, []);
 
   useEffect(() => {
@@ -108,12 +111,15 @@ function TrainMapComponent({
       return;
     }
 
+    const targetLatitudeDelta = Math.min(currentRegionRef.current.latitudeDelta, MAP_FOCUS_MAX_DELTA);
+    const targetLongitudeDelta = Math.min(currentRegionRef.current.longitudeDelta, MAP_FOCUS_MAX_DELTA);
+
     mapRef.current.animateToRegion(
       {
         latitude: targetCoordinate.latitude,
         longitude: targetCoordinate.longitude,
-        latitudeDelta: 2,
-        longitudeDelta: 2,
+        latitudeDelta: targetLatitudeDelta,
+        longitudeDelta: targetLongitudeDelta,
       },
       650,
     );
