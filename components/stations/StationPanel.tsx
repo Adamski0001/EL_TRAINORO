@@ -43,6 +43,10 @@ import {
   snapSheetInDirection,
 } from '../traffic/sheetSnapPoints';
 import { useStations } from '../../hooks/useStations';
+import {
+  useStationTrainTimetables,
+  type StationTrainSchedule,
+} from '../../hooks/useStationTrainTimetables';
 
 const TIMELINE_COLUMN_WIDTH = 26;
 const STOP_ROW_HORIZONTAL_PADDING = 16;
@@ -181,6 +185,70 @@ const determineTrainDirection = (
     return 'arrivals';
   }
   return 'departures';
+};
+
+type TimingInfo = {
+  plannedLabel: string;
+  actualLabel: string;
+  hasDelay: boolean;
+  delayMinutes: number | null;
+};
+
+type StopTiming = {
+  arrival: TimingInfo | null;
+  departure: TimingInfo | null;
+};
+
+const formatDisplayTime = (value: Date | null) => {
+  if (!value) {
+    return '—';
+  }
+  return value.toLocaleTimeString('sv-SE', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const buildTimingInfo = (
+  planned: Date | null,
+  actual: Date | null,
+  estimated: Date | null,
+): TimingInfo | null => {
+  const actualSource = actual ?? estimated ?? planned ?? null;
+  if (!planned && !actualSource) {
+    return null;
+  }
+  const plannedLabel = formatDisplayTime(planned);
+  const actualLabel = formatDisplayTime(actualSource);
+  const delayMinutes =
+    planned && actualSource
+      ? Math.max(0, Math.round((actualSource.getTime() - planned.getTime()) / 60000))
+      : null;
+  const hasDelay = delayMinutes !== null && delayMinutes > 0;
+  return { plannedLabel, actualLabel, hasDelay, delayMinutes: hasDelay ? delayMinutes : null };
+};
+
+const extractTimingFromStop = (schedule: StationTrainSchedule | null | undefined): StopTiming => {
+  if (!schedule) {
+    return { arrival: null, departure: null };
+  }
+  const { stop, isFirstStop, isLastStop } = schedule;
+  const arrival = buildTimingInfo(stop.arrivalAdvertised, stop.arrivalActual, stop.arrivalEstimated);
+  let departure = isLastStop
+    ? null
+    : buildTimingInfo(stop.departureAdvertised, stop.departureActual, stop.departureEstimated);
+
+  // Origin: mirror departure as arrival when arrival is missing
+  let arrivalTiming = arrival;
+  if (!arrivalTiming && isFirstStop && departure) {
+    arrivalTiming = departure;
+  }
+  // Origin with only arrival: mirror arrival to departure to show both
+  if (isFirstStop && arrivalTiming && !departure) {
+    departure = arrivalTiming;
+  }
+
+  return { arrival: arrivalTiming, departure };
 };
 
 type StationPanelProps = {
@@ -366,7 +434,48 @@ function StationPanelComponent({
     normalizeOperatorLabel,
   ]);
 
-  const activeList = activeTab === 'departures' ? trainGroups.departures : trainGroups.arrivals;
+  const timetableTrains = useMemo(
+    () => [...trainGroups.arrivals, ...trainGroups.departures].map(entry => entry.train),
+    [trainGroups],
+  );
+  const { timetables } = useStationTrainTimetables(timetableTrains, station.signature, {
+    enabled: visible,
+  });
+
+  const filteredTrainGroups = useMemo(() => {
+    const hasTiming = (schedule: StationTrainSchedule | undefined) => {
+      if (!schedule) {
+        return false;
+      }
+      const { stop, isFirstStop, isLastStop } = schedule;
+      const arrivalExists =
+        stop.arrivalAdvertised || stop.arrivalEstimated || stop.arrivalActual || (isFirstStop && !!(stop.departureAdvertised || stop.departureEstimated || stop.departureActual));
+      const departureExists =
+        !isLastStop &&
+        (stop.departureAdvertised ||
+          stop.departureEstimated ||
+          stop.departureActual ||
+          (isFirstStop &&
+            (stop.arrivalAdvertised || stop.arrivalEstimated || stop.arrivalActual)));
+
+      if (isLastStop) {
+        return Boolean(arrivalExists);
+      }
+      if (isFirstStop) {
+        return Boolean(arrivalExists && (stop.departureAdvertised || stop.departureEstimated || stop.departureActual));
+      }
+      return Boolean(arrivalExists && departureExists);
+    };
+
+    const filterBySchedule = (entry: StationTrainEntry) => hasTiming(timetables[entry.id]);
+
+    return {
+      arrivals: trainGroups.arrivals.filter(filterBySchedule),
+      departures: trainGroups.departures.filter(filterBySchedule),
+    };
+  }, [timetables, trainGroups]);
+
+  const activeList = activeTab === 'departures' ? filteredTrainGroups.departures : filteredTrainGroups.arrivals;
   const stationEvents = useMemo(() => {
     const normalized = station.signature.trim();
     if (!normalized) {
@@ -508,7 +617,7 @@ function StationPanelComponent({
       <Text style={[styles.tabLabel, activeTab === key && styles.tabLabelActive]}>
         {TAB_LABELS[key]}
       </Text>
-      <Text style={styles.tabCount}>{trainGroups[key].length} tåg</Text>
+      <Text style={styles.tabCount}>{filteredTrainGroups[key].length} tåg</Text>
     </Pressable>
   ));
 
@@ -572,6 +681,14 @@ function StationPanelComponent({
             {activeList.length ? (
               activeList.map((entry, index) => {
                 const operatorLabel = entry.operator ?? '—';
+                const schedule = timetables[entry.id];
+                const { arrival, departure } = extractTimingFromStop(schedule);
+                const trainSubtitle =
+                  operatorLabel !== '—'
+                    ? `${entry.label ? `Tåg ${entry.label}` : 'Tåg'} · ${operatorLabel}`
+                    : entry.label
+                      ? `Tåg ${entry.label}`
+                      : 'Tåg';
                 return (
                   <Pressable
                     key={entry.id}
@@ -609,24 +726,48 @@ function StationPanelComponent({
                         {entry.routeLabel}
                       </Text>
                       <Text style={styles.stopTrack} numberOfLines={1} ellipsizeMode="tail">
-                        {entry.label ? `Tåg ${entry.label}` : 'Tåg'}
+                        {trainSubtitle}
                       </Text>
                     </View>
 
                     <View style={styles.stopTiming}>
                       <View style={styles.timeStack}>
-                        <View style={styles.timeRow}>
-                          <Text
-                            style={[
-                              styles.timeActual,
-                              entry.direction === 'arrivals'
-                                ? styles.timeActualArriving
-                                : styles.timeActualDeparting,
-                            ]}
-                          >
-                            {operatorLabel}
-                          </Text>
-                        </View>
+                        {arrival ? (
+                          <>
+                            <View style={styles.timeRow}>
+                              <Text style={styles.timeLabel}>Ank</Text>
+                              <Text style={[styles.timeActual, styles.timeActualArriving]}>
+                                {arrival.actualLabel}
+                              </Text>
+                              {arrival.hasDelay ? (
+                                <View style={styles.delayBadge}>
+                                  <Text style={styles.delayText}>+{arrival.delayMinutes}m</Text>
+                                </View>
+                              ) : null}
+                            </View>
+                            {arrival.hasDelay ? (
+                              <Text style={styles.timePlanned}>Plan {arrival.plannedLabel}</Text>
+                            ) : null}
+                          </>
+                        ) : null}
+                        {departure ? (
+                          <>
+                            <View style={[styles.timeRow, styles.timeRowTight]}>
+                              <Text style={styles.timeLabel}>Avg</Text>
+                              <Text style={[styles.timeActual, styles.timeActualDeparting]}>
+                                {departure.actualLabel}
+                              </Text>
+                              {departure.hasDelay ? (
+                                <View style={styles.delayBadge}>
+                                  <Text style={styles.delayText}>+{departure.delayMinutes}m</Text>
+                                </View>
+                              ) : null}
+                            </View>
+                            {departure.hasDelay ? (
+                              <Text style={styles.timePlanned}>Plan {departure.plannedLabel}</Text>
+                            ) : null}
+                          </>
+                        ) : null}
                       </View>
                     </View>
                   </Pressable>
@@ -884,22 +1025,27 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   stopTiming: {
-    minWidth: 100,
-    maxWidth: 116,
+    minWidth: 120,
+    maxWidth: 142,
     alignItems: 'flex-end',
     flexShrink: 0,
   },
   timeStack: {
-    gap: 2,
+    gap: 4,
     alignItems: 'flex-end',
   },
   timeRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
+  },
+  timeRowTight: {
+    marginTop: 6,
   },
   timePlanned: {
     color: 'rgba(255,255,255,0.6)',
     fontSize: 11,
+    marginTop: 2,
   },
   timePlannedSub: {
     fontSize: 12,
@@ -915,6 +1061,24 @@ const styles = StyleSheet.create({
   },
   timeActualDeparting: {
     color: '#FFE066',
+  },
+  timeLabel: {
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  delayBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,91,91,0.65)',
+    backgroundColor: 'rgba(255,91,91,0.12)',
+  },
+  delayText: {
+    color: '#FF5B5B',
+    fontSize: 11,
+    fontWeight: '700',
   },
   stationUpdateLabel: {
     color: 'rgba(255,255,255,0.6)',

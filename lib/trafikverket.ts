@@ -1101,7 +1101,7 @@ export async function fetchTrainAnnouncementsByIdentifiers(
     windowMinutes?: number;
     perBatchLimit?: number;
     targetDate?: Date | string | null;
-    signal?: AbortSignal;
+  signal?: AbortSignal;
     onChunk?: (records: TrainAnnouncementApiEntry[]) => void;
   } = {},
 ) {
@@ -1111,6 +1111,10 @@ export async function fetchTrainAnnouncementsByIdentifiers(
     'LocationSignature',
     'ActivityType',
     'AdvertisedTimeAtLocation',
+    'EstimatedTimeAtLocation',
+    'TimeAtLocation',
+    'TrackAtLocation',
+    'Canceled',
     'FromLocation',
     'ToLocation',
     'Operator',

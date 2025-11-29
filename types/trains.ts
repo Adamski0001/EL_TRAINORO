@@ -19,6 +19,7 @@ export type TrainPosition = {
 export type TrainStop = {
   id: string;
   stationName: string;
+  locationSignature: string | null;
   track: string | null;
   arrivalAdvertised: Date | null;
   arrivalEstimated: Date | null;
