@@ -1,5 +1,5 @@
-import { memo, useEffect, useRef } from 'react';
-import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { Animated, Easing, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
 import MapView, { MapStyleElement, Region, UrlTile } from 'react-native-maps';
 
 import type { Station } from '../../types/stations';
@@ -24,6 +24,8 @@ type TrainMapProps = {
   focusRequest: MapFocusRequest | null;
 };
 
+const STATION_VISIBILITY_ZOOM_LEVEL = 8.2;
+
 const DARK_MAP_STYLE: MapStyleElement[] = [
   { elementType: 'geometry', stylers: [{ color: '#0a0f1f' }] },
   { elementType: 'labels.text.fill', stylers: [{ color: '#929cb8' }] },
@@ -38,6 +40,16 @@ const DARK_MAP_STYLE: MapStyleElement[] = [
   { featureType: 'transit', elementType: 'geometry', stylers: [{ color: '#182031' }, { visibility: 'off' }] },
 ];
 
+const computeZoomLevelFromDelta = (latitudeDelta: number) => {
+  if (!latitudeDelta || latitudeDelta <= 0) {
+    return STATION_VISIBILITY_ZOOM_LEVEL;
+  }
+  return Math.log2(360 / latitudeDelta);
+};
+
+const shouldShowStationsForDelta = (latitudeDelta: number) =>
+  computeZoomLevelFromDelta(latitudeDelta) >= STATION_VISIBILITY_ZOOM_LEVEL;
+
 function TrainMapComponent({
   style,
   initialRegion,
@@ -50,7 +62,23 @@ function TrainMapComponent({
   onSelectStation,
   focusRequest,
 }: TrainMapProps) {
+  const initialStationVisibility = shouldShowStationsForDelta(initialRegion.latitudeDelta);
   const mapRef = useRef<MapView | null>(null);
+  const stationOpacity = useRef(new Animated.Value(initialStationVisibility ? 1 : 0)).current;
+  const [stationZoomVisible, setStationZoomVisible] = useState(initialStationVisibility);
+
+  useEffect(() => {
+    Animated.timing(stationOpacity, {
+      toValue: stationZoomVisible ? 1 : 0,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [stationOpacity, stationZoomVisible]);
+
+  const handleRegionChangeComplete = useCallback((region: Region) => {
+    setStationZoomVisible(shouldShowStationsForDelta(region.latitudeDelta));
+  }, []);
 
   useEffect(() => {
     if (!focusRequest) {
@@ -102,12 +130,15 @@ function TrainMapComponent({
         moveOnMarkerPress={false}
         userInterfaceStyle="dark"
         customMapStyle={DARK_MAP_STYLE}
+        onRegionChangeComplete={handleRegionChangeComplete}
       >
         <UrlTile urlTemplate={tileUrl} maximumZ={19} zIndex={2} tileSize={256} />
         <StationMarkers
           stations={stations}
           selectedStationId={selectedStationId}
           onSelectStation={onSelectStation}
+          opacity={stationOpacity}
+          visible={stationZoomVisible}
         />
         <TrainMarkers
           trains={trains}

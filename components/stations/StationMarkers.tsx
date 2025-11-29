@@ -1,5 +1,5 @@
 import { memo, useCallback } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Animated, StyleSheet, View } from 'react-native';
 import { Marker } from 'react-native-maps';
 
 import type { Station } from '../../types/stations';
@@ -8,19 +8,26 @@ type StationMarkersProps = {
   stations: Station[];
   selectedStationId?: string | null;
   onSelectStation: (station: Station) => void;
+  opacity: Animated.Value;
+  visible: boolean;
 };
 
 type StationMarkerProps = {
   station: Station;
   selected: boolean;
   onSelectStation: (station: Station) => void;
+  opacity: Animated.Value;
+  visible: boolean;
 };
 
 const StationMarker = memo(
-  ({ station, selected, onSelectStation }: StationMarkerProps) => {
+  ({ station, selected, onSelectStation, opacity, visible }: StationMarkerProps) => {
     const handlePress = useCallback(() => {
+      if (!visible) {
+        return;
+      }
       onSelectStation(station);
-    }, [onSelectStation, station]);
+    }, [onSelectStation, station, visible]);
 
     if (!station.coordinate) {
       return null;
@@ -37,22 +44,34 @@ const StationMarker = memo(
         zIndex={1}
         onPress={handlePress}
       >
-        <View style={[styles.marker, selected && styles.markerSelected]} />
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.animatedMarker,
+            {
+              opacity: visible ? opacity : 0,
+              transform: visible ? [{ scale: 1 }] : [{ scale: 0 }],
+            },
+          ]}
+        >
+          <View style={[styles.marker, selected && styles.markerSelected]} />
+        </Animated.View>
       </Marker>
     );
   },
   (prev, next) =>
     prev.selected === next.selected &&
     prev.onSelectStation === next.onSelectStation &&
+    prev.visible === next.visible &&
     prev.station.id === next.station.id &&
     prev.station.coordinate?.latitude === next.station.coordinate?.latitude &&
     prev.station.coordinate?.longitude === next.station.coordinate?.longitude,
 );
 
 // PERF NOTE:
-// All stations are rendered to ensure every location (e.g., Stockholm C) is visible and searchable on the map.
+// Markers stay mounted but fade out when zoomed out (controlled by TrainMap) to avoid map child churn.
 
-function StationMarkersComponent({ stations, selectedStationId, onSelectStation }: StationMarkersProps) {
+function StationMarkersComponent({ stations, selectedStationId, onSelectStation, opacity, visible }: StationMarkersProps) {
   if (__DEV__) {
     console.log('[StationMarkers][Diag] count=', stations.length);
   }
@@ -65,6 +84,8 @@ function StationMarkersComponent({ stations, selectedStationId, onSelectStation 
           station={station}
           selected={station.id === selectedStationId}
           onSelectStation={onSelectStation}
+          opacity={opacity}
+          visible={visible}
         />
       ))}
     </>
@@ -74,6 +95,12 @@ function StationMarkersComponent({ stations, selectedStationId, onSelectStation 
 export const StationMarkers = memo(StationMarkersComponent);
 
 const styles = StyleSheet.create({
+  animatedMarker: {
+    width: 14,
+    height: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   marker: {
     width: 14,
     height: 14,

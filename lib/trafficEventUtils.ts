@@ -4,7 +4,8 @@ import { haversineDistance } from './geo';
 
 export const computeEventDistance = (event: TrafficEvent, coords: Coordinates): number | null => {
   let best: number | null = null;
-  event.stations.forEach(station => {
+  const stations = Array.isArray(event.stations) ? event.stations : [];
+  stations.forEach(station => {
     if (typeof station.latitude !== 'number' || typeof station.longitude !== 'number') {
       return;
     }
