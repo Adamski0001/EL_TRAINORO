@@ -3,6 +3,7 @@ import { Image, StyleSheet, View } from 'react-native';
 import { Marker, type Region } from 'react-native-maps';
 
 import type { TrainPosition } from '../../types/trains';
+import { haptics } from '../../lib/haptics';
 
 type TrainMarkersProps = {
   trains: TrainPosition[];
@@ -34,6 +35,7 @@ const TrainMarker = memo(
     const heading = normalizeBearing(train.bearing);
     const handlePress = useCallback(() => {
       onSelectTrain(train);
+      haptics.light();
     }, [onSelectTrain, train]);
 
     return (

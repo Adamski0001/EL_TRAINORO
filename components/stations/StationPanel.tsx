@@ -47,6 +47,7 @@ import {
   useStationTrainTimetables,
   type StationTrainSchedule,
 } from '../../hooks/useStationTrainTimetables';
+import { haptics } from '../../lib/haptics';
 
 const TIMELINE_COLUMN_WIDTH = 26;
 const STOP_ROW_HORIZONTAL_PADDING = 16;
@@ -492,6 +493,7 @@ function StationPanelComponent({
 
   const handleTrainPress = useCallback(
     (entry: StationTrainEntry) => {
+      haptics.light();
       onOpenTrain(entry.train);
     },
     [onOpenTrain],
@@ -635,6 +637,7 @@ function StationPanelComponent({
               <Pressable
                 accessibilityRole="button"
                 onPress={() => {
+                  haptics.medium();
                   translateY.value = withTiming(
                     SHEET_SNAP_POINTS.hidden,
                     SHEET_TIMING_CONFIG,

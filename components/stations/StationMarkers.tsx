@@ -3,6 +3,7 @@ import { Animated, StyleSheet, View } from 'react-native';
 import { Marker } from 'react-native-maps';
 
 import type { Station } from '../../types/stations';
+import { haptics } from '../../lib/haptics';
 
 type StationMarkersProps = {
   stations: Station[];
@@ -27,6 +28,7 @@ const StationMarker = memo(
         return;
       }
       onSelectStation(station);
+      haptics.light();
     }, [onSelectStation, station, visible]);
 
     if (!station.coordinate) {

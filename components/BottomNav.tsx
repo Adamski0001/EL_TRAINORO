@@ -2,6 +2,7 @@ import { BlurView } from 'expo-blur';
 import { AlertTriangle, Home, Search, UserRound } from 'lucide-react-native';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { haptics } from '../lib/haptics';
 
 export type NavKey = 'home' | 'search' | 'traffic' | 'profile';
 
@@ -39,7 +40,10 @@ export function BottomNav({ activeKey, onSelect }: BottomNavProps) {
           return (
             <Pressable
               key={item.key}
-              onPress={() => onSelect(item.key)}
+              onPress={() => {
+                onSelect(item.key);
+                haptics.medium();
+              }}
               style={({ pressed }) => [
                 styles.navButton,
                 isActive && styles.navButtonActive,

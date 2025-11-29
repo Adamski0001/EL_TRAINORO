@@ -37,6 +37,7 @@ import { computeEventDistance } from '../../lib/trafficEventUtils';
 import type { TrainPosition } from '../../types/trains';
 import type { TrafficEvent } from '../../types/traffic';
 import type { TrafficSheetSnapPoint } from '../traffic/sheetSnapPoints';
+import { haptics } from '../../lib/haptics';
 import {
   SHEET_BOTTOM_LOCK_REGION,
   SHEET_FLICK_VELOCITY,
@@ -254,12 +255,15 @@ export function ProfilePanel({
 
   const handleNotificationToggle = useCallback(
     (nextValue: boolean) => {
+      haptics.light();
       if (nextValue && !isNotificationEnabled) {
         void handleRequestNotifications();
+        haptics.success();
         return;
       }
       if (!nextValue && isNotificationEnabled) {
         Linking.openSettings().catch(error => console.warn('[ProfilePanel] notification settings', error));
+        haptics.success();
       }
     },
     [handleRequestNotifications, isNotificationEnabled],
@@ -267,12 +271,15 @@ export function ProfilePanel({
 
   const handleLocationToggle = useCallback(
     (nextValue: boolean) => {
+      haptics.light();
       if (nextValue && !isLocationEnabled) {
         void requestLocationPermission();
+        haptics.success();
         return;
       }
       if (!nextValue && isLocationEnabled) {
         Linking.openSettings().catch(error => console.warn('[ProfilePanel] location settings', error));
+        haptics.success();
       }
     },
     [isLocationEnabled, requestLocationPermission],
@@ -292,6 +299,7 @@ export function ProfilePanel({
   );
 
   const handleSync = useCallback(async () => {
+    haptics.medium();
     setSyncing(true);
     try {
       profile.reloadProfile();
@@ -304,6 +312,7 @@ export function ProfilePanel({
   }, [profile, reloadApp]);
 
   const handleLogin = useCallback(() => {
+    haptics.medium();
     Linking.openURL('https://trainar.app/login').catch(error => console.warn('[ProfilePanel] login', error));
   }, []);
 

@@ -30,6 +30,7 @@ import { useNotificationPermission } from './hooks/useNotificationPermission';
 import type { Station } from './types/stations';
 import type { TrainPosition } from './types/trains';
 import { OnboardingOverlay, type OnboardingAnswers } from './components/onboarding/OnboardingOverlay';
+import { haptics } from './lib/haptics';
 
 const trainarLogo = require('./assets/images/trainar-logo.png');
 type PrimaryNavKey = Exclude<NavKey, 'traffic'>;
@@ -383,6 +384,7 @@ const TrainarHeader = () => {
     if (reloading) {
       return;
     }
+    haptics.light();
     setReloading(true);
     try {
       if (__DEV__ && Platform.OS !== 'web' && typeof DevSettings.reload === 'function') {

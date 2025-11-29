@@ -37,6 +37,7 @@ import {
   findNearestSheetSnap,
   snapSheetInDirection,
 } from '../traffic/sheetSnapPoints';
+import { haptics } from '../../lib/haptics';
 
 type StopState = 'completed' | 'current' | 'upcoming';
 
@@ -327,6 +328,7 @@ function TrainPanelComponent({ train, visible, initialSnap = 'half', onClose, on
   );
 
   const dismiss = useCallback(() => {
+    haptics.medium();
     translateY.value = withTiming(SHEET_SNAP_POINTS.hidden, SHEET_TIMING_CONFIG, finished => {
       if (finished) {
         runOnJS(handleSnapComplete)('hidden');

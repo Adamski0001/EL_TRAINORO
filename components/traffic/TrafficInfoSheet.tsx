@@ -28,6 +28,7 @@ import { formatDistanceLabel } from '../../lib/geo';
 import { computeEventDistance } from '../../lib/trafficEventUtils';
 import type { TrafficEvent } from '../../types/traffic';
 import type { TrafficSheetSnapPoint } from './sheetSnapPoints';
+import { haptics } from '../../lib/haptics';
 import {
   SHEET_BOTTOM_LOCK_REGION,
   SHEET_FLICK_VELOCITY,
@@ -425,6 +426,7 @@ export function TrafficInfoSheet({
 
   const handleToggleEvent = useCallback(
     (event: TrafficEvent) => {
+      haptics.light();
       setExpandedEventId(current => (current === event.id ? null : event.id));
       void ensureSummary(event);
     },
