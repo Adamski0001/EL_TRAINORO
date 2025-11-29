@@ -3,7 +3,7 @@ import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { DevSettings, Image, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { DevSettings, Dimensions, Image, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
@@ -22,6 +22,7 @@ import {
   TrafficInfoSheet,
   TrafficSheetSnapPoint,
 } from './components/traffic/TrafficInfoSheet';
+import { SHEET_SNAP_POINTS } from './components/traffic/sheetSnapPoints';
 import { ProfilePanelContainer } from './components/profile/ProfilePanelContainer';
 import { StationPanelContainer } from './components/stations/StationPanelContainer';
 import { ReloadProvider, useReloadApp } from './contexts/ReloadContext';
@@ -53,6 +54,11 @@ const TRAINAR_LOGO_HEIGHT = 185;
 const TRAINAR_LOGO_VERTICAL_OFFSET = -60;
 const SEARCH_BAR_HEIGHT = 52;
 const SEARCH_PANEL_TOP_OFFSET = TRAINAR_HEADER_HEIGHT - 135 - SEARCH_BAR_HEIGHT * 0.7;
+const FOCUS_SNAP_POINT: TrafficSheetSnapPoint = 'half';
+const FOCUS_PADDING_BOTTOM = Math.max(
+  0,
+  Dimensions.get('window').height - SHEET_SNAP_POINTS[FOCUS_SNAP_POINT],
+);
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -145,12 +151,17 @@ function AppContent() {
       setTrafficSheetVisible(false);
       setStationSheetVisible(false);
       setStationSnap('hidden');
-      setTrainSnap('half');
+      setTrainSnap(FOCUS_SNAP_POINT);
       setSelectedStationId(null);
       setSelectedTrainId(train.id);
       setTrainSheetVisible(true);
       if (options.focus) {
-        setMapFocusRequest({ type: 'train', id: train.id, token: Date.now() });
+        setMapFocusRequest({
+          type: 'train',
+          id: train.id,
+          token: Date.now(),
+          paddingBottom: FOCUS_PADDING_BOTTOM,
+        });
       }
     },
     [],
@@ -167,10 +178,15 @@ function AppContent() {
       setActiveNav('home');
       setSelectedTrainId(null);
       setSelectedStationId(station.id);
-      setStationSnap('half');
+      setStationSnap(FOCUS_SNAP_POINT);
       setStationSheetVisible(true);
       if (options.focus) {
-        setMapFocusRequest({ type: 'station', id: station.id, token: Date.now() });
+        setMapFocusRequest({
+          type: 'station',
+          id: station.id,
+          token: Date.now(),
+          paddingBottom: FOCUS_PADDING_BOTTOM,
+        });
       }
     },
     [setActiveNav, setPrimaryNav, setProfileSnap, setProfileSheetVisible],
@@ -185,7 +201,7 @@ function AppContent() {
 
   const handleSelectStation = useCallback(
     (station: Station) => {
-      openStationDetails(station);
+      openStationDetails(station, { focus: true });
     },
     [openStationDetails],
   );

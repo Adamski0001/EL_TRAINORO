@@ -8,8 +8,8 @@ import { StationMarkers } from '../stations/StationMarkers';
 import { TrainMarkers } from '../trains/TrainMarkers';
 
 export type MapFocusRequest =
-  | { type: 'train'; id: string; token: number }
-  | { type: 'station'; id: string; token: number };
+  | { type: 'train'; id: string; token: number; paddingBottom?: number }
+  | { type: 'station'; id: string; token: number; paddingBottom?: number };
 
 type TrainMapProps = {
   style?: StyleProp<ViewStyle>;
@@ -94,6 +94,7 @@ function TrainMapComponent({
     }
 
     let targetCoordinate = null;
+    const focusPaddingBottom = focusRequest.paddingBottom ?? 0;
 
     if (focusRequest.type === 'train') {
       const targetTrain = trains.find(train => train.id === focusRequest.id);
@@ -111,18 +112,50 @@ function TrainMapComponent({
       return;
     }
 
-    const targetLatitudeDelta = Math.min(currentRegionRef.current.latitudeDelta, MAP_FOCUS_MAX_DELTA);
-    const targetLongitudeDelta = Math.min(currentRegionRef.current.longitudeDelta, MAP_FOCUS_MAX_DELTA);
+    let cancelled = false;
 
-    mapRef.current.animateToRegion(
-      {
-        latitude: targetCoordinate.latitude,
-        longitude: targetCoordinate.longitude,
-        latitudeDelta: targetLatitudeDelta,
-        longitudeDelta: targetLongitudeDelta,
-      },
-      650,
-    );
+    const centerOnTarget = async () => {
+      let centerCoordinate = targetCoordinate;
+
+      if (focusPaddingBottom > 0 && mapRef.current?.pointForCoordinate) {
+        try {
+          const point = await mapRef.current.pointForCoordinate(targetCoordinate);
+          if (cancelled) {
+            return;
+          }
+          const shifted = { x: point.x, y: point.y - focusPaddingBottom / 2 };
+          const adjusted = await mapRef.current.coordinateForPoint(shifted);
+          if (!cancelled && adjusted) {
+            centerCoordinate = adjusted;
+          }
+        } catch (error) {
+          // Fallback to default centering if conversion fails
+        }
+      }
+
+      if (cancelled) {
+        return;
+      }
+
+      const targetLatitudeDelta = Math.min(currentRegionRef.current.latitudeDelta, MAP_FOCUS_MAX_DELTA);
+      const targetLongitudeDelta = Math.min(currentRegionRef.current.longitudeDelta, MAP_FOCUS_MAX_DELTA);
+
+      mapRef.current?.animateToRegion(
+        {
+          latitude: centerCoordinate.latitude,
+          longitude: centerCoordinate.longitude,
+          latitudeDelta: targetLatitudeDelta,
+          longitudeDelta: targetLongitudeDelta,
+        },
+        650,
+      );
+    };
+
+    centerOnTarget();
+
+    return () => {
+      cancelled = true;
+    };
   }, [focusRequest, stations, trains]);
 
   return (
