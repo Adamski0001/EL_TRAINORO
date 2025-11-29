@@ -25,10 +25,14 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+*.log
 
 # macOS
 .DS_Store
 *.pem
+
+# Windows
+Thumbs.db
 
 # local env files
 .env
@@ -40,3 +44,11 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Editor and tool settings
+.vscode/
+.idea/
+
+# Coverage and Expo state
+coverage/
+.expo-shared/
