@@ -47,13 +47,7 @@ function TrainMapContainerComponent({
     const routes = routeSnapshot.routes;
     return trains.filter(train => {
       const route = routes.get(train.id);
-      if (!route) {
-        return true;
-      }
-      if (!route.resolved) {
-        return true;
-      }
-      return Boolean(route.from || route.to);
+      return Boolean(route?.from || route?.to);
     });
   }, [routeSnapshot.version, trains]);
 

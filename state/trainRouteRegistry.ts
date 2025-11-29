@@ -8,6 +8,7 @@ export type RouteInfo = {
   from: string | null;
   to: string | null;
   resolved: boolean;
+  operator: string | null;
 };
 
 type TrainIdentifierFilter = {
@@ -110,12 +111,17 @@ const resolveBatch = async (batch: [string, TrainIdentifierFilter][]) => {
       }
       const fromSignature = pickLocationSignature(record.fromLocations, true);
       const toSignature = pickLocationSignature(record.toLocations, false);
+      const operator =
+        normalizeIdentifier(record.operator) ??
+        normalizeIdentifier(record.informationOwner) ??
+        normalizeIdentifier(record.trainOwner);
       updates.push([
         id,
         {
           from: fromSignature,
           to: toSignature,
           resolved: true,
+          operator: operator ?? routeMap.get(id)?.operator ?? null,
         },
       ]);
       matched.add(id);
@@ -126,9 +132,10 @@ const resolveBatch = async (batch: [string, TrainIdentifierFilter][]) => {
       updates.push([
         id,
         {
-          from: null,
-          to: null,
+          from: routeMap.get(id)?.from ?? null,
+          to: routeMap.get(id)?.to ?? null,
           resolved: true,
+          operator: routeMap.get(id)?.operator ?? null,
         },
       ]);
     });
@@ -142,9 +149,10 @@ const resolveBatch = async (batch: [string, TrainIdentifierFilter][]) => {
     const fallback: [string, RouteInfo][] = batch.map(([id]) => [
       id,
       {
-        from: null,
-        to: null,
+        from: routeMap.get(id)?.from ?? null,
+        to: routeMap.get(id)?.to ?? null,
         resolved: true,
+        operator: routeMap.get(id)?.operator ?? null,
       },
     ]);
     upsertRoutes(fallback);
@@ -185,14 +193,33 @@ const queueTrains = (trains: TrainPosition[]) => {
     if (op) {
       trainMatchIndex.set(`op:${op}`, train.id);
     }
-    if (routeMap.has(train.id) || pending.has(train.id)) {
+    const existing = routeMap.get(train.id);
+    const normalizedOwner = normalizeIdentifier(train.trainOwner);
+
+    if (existing) {
+      if (!existing.operator && normalizedOwner) {
+        routeMap.set(train.id, { ...existing, operator: normalizedOwner });
+        updated = true;
+      }
+      if (!existing.operator && (adv || op) && !pending.has(train.id)) {
+        pending.set(train.id, {
+          advertisedTrainIdent: adv ?? undefined,
+          operationalTrainNumber: op ?? undefined,
+        });
+      }
       return;
     }
+
+    if (pending.has(train.id)) {
+      return;
+    }
+
     if (!adv && !op) {
       routeMap.set(train.id, {
         from: null,
         to: null,
         resolved: true,
+        operator: normalizedOwner,
       });
       updated = true;
       return;

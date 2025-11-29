@@ -1113,6 +1113,9 @@ export async function fetchTrainAnnouncementsByIdentifiers(
     'AdvertisedTimeAtLocation',
     'FromLocation',
     'ToLocation',
+    'Operator',
+    'InformationOwner',
+    'TrainOwner',
   ];
   const meaningful = identifiers.filter(
     identifier =>

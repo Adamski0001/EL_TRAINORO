@@ -19,7 +19,6 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { deriveAccentColor } from '../../lib/deriveAccentColor';
 import { trainRouteRegistry, type RouteInfo } from '../../state/trainRouteRegistry';
 import { useTrainPositions } from '../../hooks/useTrainPositions';
 import { useTrafficEvents } from '../../hooks/useTrafficEvents';
@@ -43,19 +42,10 @@ import {
   findNearestSheetSnap,
   snapSheetInDirection,
 } from '../traffic/sheetSnapPoints';
+import { useStations } from '../../hooks/useStations';
 
 const TIMELINE_COLUMN_WIDTH = 26;
 const STOP_ROW_HORIZONTAL_PADDING = 16;
-const RAIL_TRACK_LEFT = STOP_ROW_HORIZONTAL_PADDING;
-const RAIL_LINE_WIDTH = 3;
-const RAIL_TRACK_INSET = 2;
-const RAIL_TIE_HEIGHT = 4;
-const RAIL_TIE_OVERHANG = 4;
-const RAIL_SLEEPER_WIDTH =
-  TIMELINE_COLUMN_WIDTH - RAIL_TRACK_INSET * 2 + RAIL_TIE_OVERHANG * 2;
-const RAIL_SLEEPER_LEFT = RAIL_TRACK_LEFT + RAIL_TRACK_INSET - RAIL_TIE_OVERHANG;
-const RAIL_TIES_PER_GAP = 4;
-const MIN_RAIL_SLEEPERS = 20;
 const EARTH_RADIUS_METERS = 6_371_000;
 
 type TabKey = 'departures' | 'arrivals';
@@ -162,19 +152,6 @@ const formatUpdatedLabel = (timestamp: number | null) => {
   return `Uppdaterad ${hours} h ${remainder} min sedan`;
 };
 
-const buildTrainRouteLabel = (route: RouteInfo | null, train: TrainPosition) => {
-  if (route?.from && route?.to) {
-    return `${route.from} → ${route.to}`;
-  }
-  if (route?.from && !route?.to) {
-    return `Från ${route.from}`;
-  }
-  if (!route?.from && route?.to) {
-    return `Mot ${route.to}`;
-  }
-  return `Tåg ${train.label}`;
-};
-
 const determineTrainDirection = (
   train: TrainPosition,
   stationSignature: string,
@@ -231,6 +208,7 @@ function StationPanelComponent({
   const onSnapPointChangeRef = useRef(onSnapPointChange);
   const { trains } = useTrainPositions();
   const { events } = useTrafficEvents();
+  const { stations } = useStations();
   const routeSnapshot = useSyncExternalStore(
     trainRouteRegistry.subscribe,
     () => trainRouteRegistry.getSnapshot(),
@@ -249,8 +227,68 @@ function StationPanelComponent({
     setActiveTab('departures');
   }, [station.id]);
 
-  const accent = useMemo(() => deriveAccentColor(station.signature), [station.signature]);
-  const displayName = station.displayNames[0] ?? station.displayName ?? station.signature;
+  useEffect(() => {
+    trainRouteRegistry.ensureRoutesFor(trains);
+  }, [trains]);
+
+  const stationNameLookup = useMemo(() => {
+    const map = new Map<string, Station>();
+    stations.forEach(entry => map.set(entry.signature, entry));
+    return map;
+  }, [stations]);
+
+  const resolveStationName = useCallback(
+    (signature: string | null | undefined) => {
+      const normalized = (signature ?? '').trim();
+      if (!normalized) {
+        return null;
+      }
+      const stationEntry = stationNameLookup.get(normalized);
+      if (!stationEntry) {
+        return normalized;
+      }
+      return (
+        stationEntry.officialName?.trim() ||
+        stationEntry.displayName?.trim() ||
+        stationEntry.displayNames.find(Boolean)?.trim() ||
+        stationEntry.shortDisplayName?.trim() ||
+        normalized
+      );
+    },
+    [stationNameLookup],
+  );
+
+  const normalizeOperatorLabel = useCallback((value: string | null | undefined) => {
+    const trimmed = (value ?? '').trim();
+    if (!trimmed) {
+      return null;
+    }
+    return trimmed.length <= 4 ? trimmed.toUpperCase() : trimmed;
+  }, []);
+
+  const buildTrainRouteLabel = useCallback(
+    (route: RouteInfo | null, train: TrainPosition) => {
+      const fromLabel = route?.from ? resolveStationName(route.from) : null;
+      const toLabel = route?.to ? resolveStationName(route.to) : null;
+      if (fromLabel && toLabel) {
+        return `${fromLabel} → ${toLabel}`;
+      }
+      if (fromLabel && !toLabel) {
+        return `Från ${fromLabel}`;
+      }
+      if (!fromLabel && toLabel) {
+        return `Mot ${toLabel}`;
+      }
+      return train.label ? `Tåg ${train.label}` : 'Tåg';
+    },
+    [resolveStationName],
+  );
+
+  const displayName =
+    resolveStationName(station.signature) ??
+    station.officialName?.trim() ??
+    station.displayName ??
+    station.signature;
   const crowding = CROWDING_MAP[station.trafficVolume];
   const crowdingLabel = crowding?.label ?? 'Okänt';
   const crowdingDescription = crowding?.description ?? 'Ingen aktuell prognos.';
@@ -264,6 +302,9 @@ function StationPanelComponent({
 
     trains.forEach(train => {
       const route = trainRouteRegistry.getRoute(train.id);
+      if (!route?.from && !route?.to) {
+        return;
+      }
       const direction = determineTrainDirection(train, normalizedSignature, station.coordinate, route);
       if (!direction) {
         return;
@@ -273,10 +314,12 @@ function StationPanelComponent({
         station.coordinate && train.coordinate
           ? computeDistanceMeters(train.coordinate, station.coordinate)
           : null;
+      const operatorLabel =
+        normalizeOperatorLabel(route?.operator) ?? normalizeOperatorLabel(train.trainOwner) ?? null;
       const entry: StationTrainEntry = {
         id: train.id,
         label: train.label,
-        operator: train.trainOwner ?? null,
+        operator: operatorLabel,
         routeLabel: buildTrainRouteLabel(route, train),
         updatedLabel: formatUpdatedLabel(updatedAt),
         updatedAt,
@@ -318,6 +361,9 @@ function StationPanelComponent({
     station.coordinate?.latitude,
     station.coordinate?.longitude,
     routeSnapshot.version,
+    resolveStationName,
+    buildTrainRouteLabel,
+    normalizeOperatorLabel,
   ]);
 
   const activeList = activeTab === 'departures' ? trainGroups.departures : trainGroups.arrivals;
@@ -523,21 +569,9 @@ function StationPanelComponent({
           <View style={styles.tabRow}>{tabButtons}</View>
 
           <BlurView intensity={60} tint="dark" style={styles.stopList}>
-            <View pointerEvents="none" style={styles.railLineContainer}>
-              <View style={styles.railLine} />
-              <View style={styles.railLine} />
-            </View>
-            <View pointerEvents="none" style={styles.railSleeperLayer}>
-              {Array.from(
-                { length: Math.max((activeList.length + 1) * RAIL_TIES_PER_GAP, MIN_RAIL_SLEEPERS) },
-                (_, index) => (
-                  <View key={`sleeper-${index}`} style={styles.railTie} />
-                ),
-              )}
-            </View>
             {activeList.length ? (
               activeList.map((entry, index) => {
-                const operatorLabel = entry.operator ?? entry.routeLabel ?? 'Operatör saknas';
+                const operatorLabel = entry.operator ?? '—';
                 return (
                   <Pressable
                     key={entry.id}
@@ -565,11 +599,17 @@ function StationPanelComponent({
                     </View>
 
                     <View style={styles.stopDetails}>
-                      <Text style={styles.stopName} numberOfLines={1} ellipsizeMode="tail">
-                        {entry.label}
+                      <Text
+                        style={styles.stopName}
+                        numberOfLines={2}
+                        ellipsizeMode="tail"
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.85}
+                      >
+                        {entry.routeLabel}
                       </Text>
                       <Text style={styles.stopTrack} numberOfLines={1} ellipsizeMode="tail">
-                        {entry.routeLabel}
+                        {entry.label ? `Tåg ${entry.label}` : 'Tåg'}
                       </Text>
                     </View>
 
@@ -586,16 +626,6 @@ function StationPanelComponent({
                           >
                             {operatorLabel}
                           </Text>
-                        </View>
-                        {entry.distanceLabel ? (
-                          <View style={styles.timeRow}>
-                            <Text style={[styles.timePlanned, styles.timePlannedSub]}>
-                              {entry.distanceLabel}
-                            </Text>
-                          </View>
-                        ) : null}
-                        <View style={styles.timeRow}>
-                          <Text style={styles.stationUpdateLabel}>{entry.updatedLabel}</Text>
                         </View>
                       </View>
                     </View>
@@ -793,6 +823,7 @@ const styles = StyleSheet.create({
     gap: 12,
     position: 'relative',
     zIndex: 1,
+    minHeight: 88,
   },
   stopRowDivider: {
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -810,44 +841,6 @@ const styles = StyleSheet.create({
     flex: 1,
     width: 2,
     backgroundColor: 'transparent',
-  },
-  railLineContainer: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: RAIL_TRACK_LEFT,
-    width: TIMELINE_COLUMN_WIDTH,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: RAIL_TRACK_INSET,
-    zIndex: 1,
-  },
-  railLine: {
-    width: RAIL_LINE_WIDTH,
-    height: '100%',
-    backgroundColor: '#b3bcc6',
-    borderRadius: RAIL_LINE_WIDTH / 2,
-  },
-  railSleeperLayer: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: RAIL_SLEEPER_LEFT,
-    width: RAIL_SLEEPER_WIDTH,
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    zIndex: 0,
-  },
-  railTie: {
-    height: RAIL_TIE_HEIGHT,
-    borderRadius: RAIL_TIE_HEIGHT / 2,
-    backgroundColor: '#6b4b2d',
-    width: '100%',
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 2,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 1,
   },
   connectorHidden: {
     opacity: 0,
@@ -873,27 +866,31 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     minWidth: 0,
+    gap: 2,
+    paddingVertical: 2,
   },
   stopName: {
     color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '700',
     flexShrink: 1,
     minWidth: 0,
+    lineHeight: 18,
   },
   stopTrack: {
     color: 'rgba(255,255,255,0.55)',
     fontSize: 12,
-    marginTop: 2,
+    marginTop: 0,
     flexShrink: 1,
   },
   stopTiming: {
-    minWidth: 140,
+    minWidth: 100,
+    maxWidth: 116,
     alignItems: 'flex-end',
     flexShrink: 0,
   },
   timeStack: {
-    gap: 8,
+    gap: 2,
     alignItems: 'flex-end',
   },
   timeRow: {
