@@ -255,13 +255,24 @@ const computeStopStatus = (
   return { status: 'on-time', delayMinutes: null };
 };
 
-const compareAdvertisedTimes = (a: string | null, b: string | null) => {
-  const aTimestamp = a ? Date.parse(a) : Number.NaN;
-  const bTimestamp = b ? Date.parse(b) : Number.NaN;
-  const safeA = Number.isNaN(aTimestamp) ? Number.MAX_SAFE_INTEGER : aTimestamp;
-  const safeB = Number.isNaN(bTimestamp) ? Number.MAX_SAFE_INTEGER : bTimestamp;
-  return safeA - safeB;
+const buildStopSortInfo = (announcement: StationStopApiEntry) => {
+  const advertisedTime = parseApiDate(announcement.advertisedTimeAtLocation);
+  const estimatedTime = parseApiDate(announcement.estimatedTimeAtLocation);
+  const actualTime = parseApiDate(announcement.timeAtLocation);
+  const targetTime = actualTime ?? estimatedTime ?? advertisedTime ?? null;
+  const sortTimestamp = targetTime ? targetTime.getTime() : Number.MAX_SAFE_INTEGER;
+  return { advertisedTime, estimatedTime, actualTime, targetTime, sortTimestamp };
 };
+
+const sortTrainEntriesByTime = (list: StationTrainEntry[]) =>
+  list.sort((a, b) => {
+    if (a.sortTimestamp !== b.sortTimestamp) {
+      return a.sortTimestamp - b.sortTimestamp;
+    }
+    const aTime = a.updatedAt ?? 0;
+    const bTime = b.updatedAt ?? 0;
+    return aTime - bTime;
+  });
 
 const determineTrainDirection = (
   train: TrainPosition,
@@ -336,6 +347,21 @@ const formatDisplayTime = (value: Date | null) => {
     hour: '2-digit',
     minute: '2-digit',
   });
+};
+
+const formatDisplayDate = (value: Date | null, referenceTimestamp?: number) => {
+  if (!value) {
+    return null;
+  }
+  const reference = referenceTimestamp ? new Date(referenceTimestamp) : new Date();
+  const options: Intl.DateTimeFormatOptions = {
+    month: 'short',
+    day: 'numeric',
+  };
+  if (value.getFullYear() !== reference.getFullYear()) {
+    options.year = 'numeric';
+  }
+  return value.toLocaleDateString('sv-SE', options);
 };
 
 const buildTimingInfo = (
@@ -682,18 +708,8 @@ function StationPanelComponent({
       }
     });
 
-    const sortEntries = (list: StationTrainEntry[]) =>
-      list.sort((a, b) => {
-        if (a.sortTimestamp !== b.sortTimestamp) {
-          return a.sortTimestamp - b.sortTimestamp;
-        }
-        const aTime = a.updatedAt ?? 0;
-        const bTime = b.updatedAt ?? 0;
-        return aTime - bTime;
-      });
-
-    sortEntries(arrivals);
-    sortEntries(departures);
+    sortTrainEntriesByTime(arrivals);
+    sortTrainEntriesByTime(departures);
     return { arrivals, departures };
   }, [
     buildTrainRouteLabel,
@@ -711,10 +727,8 @@ function StationPanelComponent({
     }
 
     const buildEntry = (announcement: StationStopApiEntry, direction: TabKey, index: number) => {
-      const advertisedTime = parseApiDate(announcement.advertisedTimeAtLocation);
-      const estimatedTime = parseApiDate(announcement.estimatedTimeAtLocation);
-      const actualTime = parseApiDate(announcement.timeAtLocation);
-      const targetTime = actualTime ?? estimatedTime ?? advertisedTime ?? null;
+      const { advertisedTime, estimatedTime, actualTime, targetTime, sortTimestamp } =
+        buildStopSortInfo(announcement);
       const idBase =
         announcement.operationalTrainNumber ??
         announcement.advertisedTrainIdent ??
@@ -775,7 +789,6 @@ function StationPanelComponent({
       );
 
       const etaLabel = buildEtaLabel(targetTime, stop.canceled, now);
-      const sortTimestamp = advertisedTime ? advertisedTime.getTime() : Number.MAX_SAFE_INTEGER;
 
       const routeLabel =
         direction === 'arrivals'
@@ -812,24 +825,20 @@ function StationPanelComponent({
 
     const timetableMap: Record<string, StationTrainSchedule> = {};
 
-    const sortedArrivals = [...stationStops.arrivals].sort((a, b) =>
-      compareAdvertisedTimes(a.advertisedTimeAtLocation, b.advertisedTimeAtLocation),
-    );
-    const sortedDepartures = [...stationStops.departures].sort((a, b) =>
-      compareAdvertisedTimes(a.advertisedTimeAtLocation, b.advertisedTimeAtLocation),
-    );
-
-    const arrivalEntries = sortedArrivals.map((announcement, index) => {
+    const arrivalEntries = stationStops.arrivals.map((announcement, index) => {
       const { entry, schedule } = buildEntry(announcement, 'arrivals', index);
       timetableMap[entry.id] = schedule;
       return entry;
     });
 
-    const departureEntries = sortedDepartures.map((announcement, index) => {
+    const departureEntries = stationStops.departures.map((announcement, index) => {
       const { entry, schedule } = buildEntry(announcement, 'departures', index);
       timetableMap[entry.id] = schedule;
       return entry;
     });
+
+    sortTrainEntriesByTime(arrivalEntries);
+    sortTrainEntriesByTime(departureEntries);
 
     return {
       arrivals: arrivalEntries,
@@ -1140,6 +1149,14 @@ function StationPanelComponent({
                   schedule?.stop.departureEstimated ??
                   schedule?.stop.departureAdvertised ??
                   null;
+                const arrivalDateLabel = formatDisplayDate(
+                  stopArrivalTime ?? entry.estimatedTime ?? entry.plannedTime,
+                  now,
+                );
+                const departureDateLabel = formatDisplayDate(
+                  stopDepartureTime ?? entry.estimatedTime ?? entry.plannedTime,
+                  now,
+                );
                 const arrivalEta = buildEtaLabel(stopArrivalTime, stopCanceled ?? false, now);
                 const departureEta = buildEtaLabel(
                   stopDepartureTime,
@@ -1239,6 +1256,9 @@ function StationPanelComponent({
                                 </View>
                               ) : null}
                             </View>
+                            {arrivalDateLabel ? (
+                              <Text style={styles.timeDate}>{arrivalDateLabel}</Text>
+                            ) : null}
                             {showDelayBadge && plannedLabel ? (
                               <Text style={styles.timePlanned}>Plan {plannedLabel}</Text>
                             ) : null}
@@ -1265,6 +1285,9 @@ function StationPanelComponent({
                                 </View>
                               ) : null}
                             </View>
+                            {departureDateLabel ? (
+                              <Text style={styles.timeDate}>{departureDateLabel}</Text>
+                            ) : null}
                             {showDelayBadge && plannedLabel ? (
                               <Text style={styles.timePlanned}>Plan {plannedLabel}</Text>
                             ) : null}
@@ -1570,6 +1593,11 @@ const styles = StyleSheet.create({
   timePlanned: {
     color: 'rgba(255,255,255,0.6)',
     fontSize: 11,
+    marginTop: 2,
+  },
+  timeDate: {
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 12,
     marginTop: 2,
   },
   timePlannedSub: {
