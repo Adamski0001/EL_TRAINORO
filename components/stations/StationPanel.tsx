@@ -327,11 +327,17 @@ const buildStationStopsFromAnnouncements = (
 
   announcements.forEach(item => {
     const activity = normalizeActivityType(item.activityType);
+    const fromLocations = item.fromLocations
+      .map(entry => entry?.name?.trim())
+      .filter((entry): entry is string => Boolean(entry));
+    const toLocations = item.toLocations
+      .map(entry => entry?.name?.trim())
+      .filter((entry): entry is string => Boolean(entry));
     const entry: StationStopApiEntry = {
       advertisedTrainIdent: item.advertisedTrainIdent,
       operationalTrainNumber: item.operationalTrainNumber,
-      fromLocation: item.fromLocations,
-      toLocation: item.toLocations,
+      fromLocation: fromLocations,
+      toLocation: toLocations,
       activityType: activity === 'Arrival' ? 'Arrival' : 'Departure',
       advertisedTimeAtLocation: item.advertisedTimeAtLocation,
       estimatedTimeAtLocation: item.estimatedTimeAtLocation,

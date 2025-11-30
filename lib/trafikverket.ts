@@ -500,7 +500,8 @@ const resolveCoordinates = (entry: XmlNode): { latitude: number; longitude: numb
 const mapLocationRefs = (value: unknown): AnnouncementLocationRef[] =>
   ensureArray(value as XmlNode | XmlNode[])
     .map(item => {
-      const name = (item?.LocationName as string) ?? null;
+      const signature = pickLocationSignatureValue(item?.Signature ?? item);
+      const name = (item?.LocationName as string) ?? signature ?? null;
       if (!name) {
         return null;
       }
