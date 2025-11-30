@@ -22,6 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { trainRouteRegistry, type RouteInfo } from '../../state/trainRouteRegistry';
 import { useTrainPositions } from '../../hooks/useTrainPositions';
 import { useTrafficEvents } from '../../hooks/useTrafficEvents';
+import { fetchStationAnnouncements, type TrainAnnouncementApiEntry } from '../../lib/trafikverket';
 import type { TrainPosition, TrainStop } from '../../types/trains';
 import type { TrafficEvent } from '../../types/traffic';
 import type {
@@ -49,14 +50,15 @@ import {
 } from '../../hooks/useStationTrainTimetables';
 import { haptics } from '../../lib/haptics';
 
+declare const __DEV__: boolean | undefined;
+const IS_DEV = typeof __DEV__ !== 'undefined' ? __DEV__ : process.env.NODE_ENV !== 'production';
 const API_BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL ?? '').replace(/\/+$/, '');
 
 const TIMELINE_COLUMN_WIDTH = 26;
 const STOP_ROW_HORIZONTAL_PADDING = 16;
 const EARTH_RADIUS_METERS = 6_371_000;
-const PAST_GRACE_MINUTES = 15;
-const UPCOMING_WINDOW_MINUTES = 12 * 60;
-
+const PAST_WINDOW_MINUTES = 180;
+const UPCOMING_WINDOW_MINUTES = 24 * 60;
 type TabKey = 'departures' | 'arrivals';
 
 const TAB_KEYS: TabKey[] = ['departures', 'arrivals'];
@@ -200,6 +202,16 @@ const formatUpdatedLabel = (timestamp: number | null) => {
   return `Uppdaterad ${hours} h ${remainder} min sedan`;
 };
 
+const trimSignature = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value).trim();
+};
+
 const parseApiDate = (value: string | null | undefined): Date | null => {
   if (!value) {
     return null;
@@ -275,17 +287,73 @@ const sortTrainEntriesByTime = (list: StationTrainEntry[]) =>
   });
 
 const getEntryTimestamp = (entry: StationTrainEntry): number | null => {
-  const candidate =
-    entry.estimatedTime ??
-    entry.plannedTime ??
-    (entry.sortTimestamp !== Number.MAX_SAFE_INTEGER
-      ? new Date(entry.sortTimestamp)
-      : null);
-  if (!candidate) {
+  const sortTs = Number.isFinite(entry.sortTimestamp) ? entry.sortTimestamp : null;
+  const plannedTs = entry.plannedTime?.getTime() ?? null;
+  const estimatedTs = entry.estimatedTime?.getTime() ?? null;
+  const candidates = [estimatedTs, plannedTs, sortTs].filter(
+    (value): value is number => typeof value === 'number' && !Number.isNaN(value),
+  );
+  if (!candidates.length) {
     return null;
   }
-  const ts = candidate.getTime();
-  return Number.isNaN(ts) ? null : ts;
+  return candidates[0] ?? null;
+};
+
+const normalizeActivityType = (value: string | null): 'Arrival' | 'Departure' | null => {
+  const normalized = value?.trim().toLowerCase() ?? '';
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.startsWith('ank')) {
+    return 'Arrival';
+  }
+  if (normalized.startsWith('avg')) {
+    return 'Departure';
+  }
+  if (normalized.includes('arrival')) {
+    return 'Arrival';
+  }
+  if (normalized.includes('departure')) {
+    return 'Departure';
+  }
+  return null;
+};
+
+const buildStationStopsFromAnnouncements = (
+  announcements: TrainAnnouncementApiEntry[],
+): StationStopApiResponse => {
+  const arrivals: StationStopApiEntry[] = [];
+  const departures: StationStopApiEntry[] = [];
+
+  announcements.forEach(item => {
+    const activity = normalizeActivityType(item.activityType);
+    const entry: StationStopApiEntry = {
+      advertisedTrainIdent: item.advertisedTrainIdent,
+      operationalTrainNumber: item.operationalTrainNumber,
+      fromLocation: item.fromLocations,
+      toLocation: item.toLocations,
+      activityType: activity === 'Arrival' ? 'Arrival' : 'Departure',
+      advertisedTimeAtLocation: item.advertisedTimeAtLocation,
+      estimatedTimeAtLocation: item.estimatedTimeAtLocation,
+      timeAtLocation: item.timeAtLocation,
+      trackAtLocation: item.trackAtLocation,
+      canceled: item.canceled,
+      deviation: item.deviationTexts,
+      productInformation: item.productInformation ? [item.productInformation] : [],
+      operator: item.operator,
+    };
+    if (activity === 'Arrival') {
+      arrivals.push(entry);
+    } else {
+      departures.push(entry);
+    }
+  });
+
+  return {
+    station: '',
+    arrivals,
+    departures,
+  };
 };
 
 const determineTrainDirection = (
@@ -449,6 +517,12 @@ function StationPanelComponent({
   const [stationStops, setStationStops] = useState<StationStopApiResponse | null>(null);
   const [stationStopsLoading, setStationStopsLoading] = useState(false);
   const [stationStopsError, setStationStopsError] = useState<string | null>(null);
+  const [fallbackAnnouncements, setFallbackAnnouncements] = useState<TrainAnnouncementApiEntry[] | null>(null);
+  const [fallbackAnnouncementsError, setFallbackAnnouncementsError] = useState<string | null>(null);
+  const [fallbackAnnouncementsLoading, setFallbackAnnouncementsLoading] = useState(false);
+  const [fallbackAttempted, setFallbackAttempted] = useState(false);
+  const fallbackAbortRef = useRef<AbortController | null>(null);
+  const fallbackStartedRef = useRef(false);
   const [now, setNow] = useState(() => Date.now());
   const routeSnapshot = useSyncExternalStore(
     trainRouteRegistry.subscribe,
@@ -493,7 +567,7 @@ function StationPanelComponent({
 
   const resolveStationName = useCallback(
     (signature: string | null | undefined) => {
-      const normalized = (signature ?? '').trim();
+      const normalized = trimSignature(signature);
       if (!normalized) {
         return null;
       }
@@ -513,7 +587,7 @@ function StationPanelComponent({
   );
 
   const normalizeOperatorLabel = useCallback((value: string | null | undefined) => {
-    const trimmed = (value ?? '').trim();
+    const trimmed = trimSignature(value);
     if (!trimmed) {
       return null;
     }
@@ -566,7 +640,7 @@ function StationPanelComponent({
     station.displayName ??
     station.signature;
   const isStockholmC =
-    station.signature?.trim().toLowerCase() === 'cst' ||
+    trimSignature(station.signature).toLowerCase() === 'cst' ||
     (displayName?.trim().toLowerCase() ?? '') === 'stockholm c';
   const crowding = CROWDING_MAP[station.trafficVolume];
   const crowdingLabel = crowding?.label ?? 'Okänt';
@@ -574,11 +648,15 @@ function StationPanelComponent({
   const crowdingColor = crowding?.color ?? '#62CDFF';
 
   useEffect(() => {
-    const signature = station.signature?.trim();
+    const signature = trimSignature(station.signature);
     if (!visible || !signature) {
       setStationStops(null);
       setStationStopsError(null);
       setStationStopsLoading(false);
+      setFallbackAnnouncements(null);
+      setFallbackAnnouncementsError(null);
+      setFallbackAnnouncementsLoading(false);
+      setFallbackAttempted(false);
       return () => {};
     }
     const controller = new AbortController();
@@ -609,13 +687,84 @@ function StationPanelComponent({
   }, [loadStationStops, station.signature, visible]);
 
   useEffect(() => {
+    if (!visible) {
+      fallbackAbortRef.current?.abort();
+      setFallbackAttempted(false);
+      fallbackStartedRef.current = false;
+      setFallbackAnnouncements(null);
+      setFallbackAnnouncementsError(null);
+      setFallbackAnnouncementsLoading(false);
+      return;
+    }
+
+    if (combinedStationStops || fallbackStartedRef.current) {
+      return;
+    }
+
+    fallbackStartedRef.current = true;
+    const controller = new AbortController();
+    fallbackAbortRef.current = controller;
+
+    setFallbackAnnouncementsLoading(true);
+    setFallbackAnnouncementsError(null);
+
+    if (IS_DEV) {
+      console.log('[StationPanel][Diag][FallbackAnnouncements] load start', {
+        station: station.signature,
+        targetDate: new Date().toISOString(),
+      });
+    }
+
+    (async () => {
+      try {
+        const data = await fetchStationAnnouncements(station.signature, {
+          targetDate: new Date(),
+          forwardHours: 36,
+          backwardHours: 6,
+          limit: 8000,
+          includeAdvertisedOnly: false,
+          signal: controller.signal,
+        });
+        console.log('[StationPanel][Diag][FallbackAnnouncements] load success', {
+          station: station.signature,
+          count: data.length,
+        });
+        setFallbackAnnouncements(data);
+        setStationStops(current => current ?? buildStationStopsFromAnnouncements(data));
+        setStationStopsError(null);
+      } catch (error) {
+        const aborted = controller.signal.aborted;
+        console.warn('[StationPanel][Diag][FallbackAnnouncements] load failed', {
+          station: station.signature,
+          aborted,
+          error,
+        });
+        if (!aborted) {
+          setFallbackAnnouncements(null);
+          setFallbackAnnouncementsError(
+            error instanceof Error ? error.message : 'Kunde inte hämta fallback-tider',
+          );
+        }
+      } finally {
+        setFallbackAnnouncementsLoading(false);
+        setFallbackAttempted(true);
+        fallbackStartedRef.current = false;
+      }
+    })();
+
+    return () => {
+      controller.abort();
+    };
+  }, [combinedStationStops, station.signature, visible]);
+
+  useEffect(() => {
     if (stationStopsError) {
       console.warn('[StationPanel] station stop load failed', stationStopsError);
     }
   }, [stationStopsError]);
 
   const { timetables } = useStationTrainTimetables(trains, station.signature, {
-    enabled: visible && !stationStops,
+    enabled: visible && !combinedStationStops,
     includeStationScope: true,
     windowMinutes: 2_880,
   });
@@ -623,7 +772,7 @@ function StationPanelComponent({
   const liveTrainGroups = useMemo(() => {
     const arrivals: StationTrainEntry[] = [];
     const departures: StationTrainEntry[] = [];
-    const normalizedSignature = station.signature.trim();
+    const normalizedSignature = trimSignature(station.signature);
     const nowMs = now;
     const liveTrainMap = new Map<string, TrainPosition>();
     trains.forEach(train => liveTrainMap.set(train.id, train));
@@ -675,7 +824,7 @@ function StationPanelComponent({
       const estimatedTime =
         direction === 'departures' ? stop.departureEstimated : stop.arrivalEstimated;
       const actualTime = direction === 'departures' ? stop.departureActual : stop.arrivalActual;
-      const targetTime = stopTime ?? plannedTime ?? null;
+      const targetTime = stopTime ?? estimatedTime ?? plannedTime ?? null;
       const { status, delayMinutes } = computeStopStatus(
         plannedTime,
         estimatedTime,
@@ -735,8 +884,20 @@ function StationPanelComponent({
     now,
   ]);
 
+  const combinedStationStops: StationStopApiResponse | null = useMemo(() => {
+    const hasStationStops =
+      stationStops && (stationStops.arrivals?.length || stationStops.departures?.length);
+    if (hasStationStops) {
+      return stationStops;
+    }
+    if (fallbackAnnouncements && fallbackAnnouncements.length) {
+      return buildStationStopsFromAnnouncements(fallbackAnnouncements);
+    }
+    return stationStops ?? null;
+  }, [fallbackAnnouncements, stationStops]);
+
   const stationStopGroups = useMemo<StationStopGroups | null>(() => {
-    if (!stationStops) {
+    if (!combinedStationStops) {
       return null;
     }
 
@@ -861,13 +1022,13 @@ function StationPanelComponent({
     };
   }, [
     buildTrainRouteLabel,
+    combinedStationStops,
     displayName,
     normalizeOperatorLabel,
     now,
     resolveStationName,
     station.coordinate,
     station.signature,
-    stationStops,
   ]);
 
   const combinedTimetables = stationStopGroups?.timetables ?? timetables;
@@ -889,7 +1050,7 @@ function StationPanelComponent({
   }, [liveTrainGroups.arrivals, liveTrainGroups.departures, stationStopGroups]);
 
   const filteredTrainGroups = useMemo(() => {
-    const minTs = now - PAST_GRACE_MINUTES * 60_000;
+    const minTs = now - PAST_WINDOW_MINUTES * 60_000;
     const maxTs = now + UPCOMING_WINDOW_MINUTES * 60_000;
     const filterList = (list: StationTrainEntry[]) => {
       const filtered = list.filter(entry => {
@@ -911,81 +1072,103 @@ function StationPanelComponent({
     activeTab === 'departures' ? filteredTrainGroups.departures : filteredTrainGroups.arrivals;
 
   useEffect(() => {
-    if (!visible || !isStockholmC) {
+    if (!IS_DEV || !visible || !isStockholmC) {
       return;
     }
-    console.log('[StationPanel][Diag][Stockholm C] stop list snapshot', {
+
+    const formatTs = (value: number | null | undefined) =>
+      typeof value === 'number' && !Number.isNaN(value) ? new Date(value).toISOString() : null;
+
+    const describeList = (list: StationTrainEntry[]) => {
+      const withTs = list
+        .map(entry => ({ entry, ts: getEntryTimestamp(entry) }))
+        .filter(item => item.ts !== null)
+        .sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+      const earliest = withTs[0]?.ts ?? null;
+      const latest = withTs[withTs.length - 1]?.ts ?? null;
+      const sample = withTs.slice(0, 4).map(item => ({
+        time: formatTs(item.ts),
+        label: item.entry.label,
+        dir: item.entry.direction,
+        track: item.entry.track,
+        status: item.entry.status,
+      }));
+      return {
+        count: list.length,
+        earliest: formatTs(earliest),
+        latest: formatTs(latest),
+        sample,
+      };
+    };
+
+    console.log('[StationPanel][Diag][Stoplist]', {
       station: station.signature,
-      displayName,
+      name: displayName,
       source: stationStopGroups ? 'api' : 'live',
-      arrivals: activeTab === 'arrivals' ? activeList : filteredTrainGroups.arrivals ?? [],
-      departures: activeTab === 'departures' ? activeList : filteredTrainGroups.departures ?? [],
-      rawArrivals: trainGroups?.arrivals ?? [],
-      rawDepartures: trainGroups?.departures ?? [],
-      stationStops,
-      stationStopsError,
-      timestamp: new Date().toISOString(),
+      usingFallback: Boolean(!stationStops && fallbackAnnouncements?.length),
+      window: { pastMinutes: PAST_WINDOW_MINUTES, futureMinutes: UPCOMING_WINDOW_MINUTES },
+      filtered: {
+        arrivals: describeList(filteredTrainGroups.arrivals ?? []),
+        departures: describeList(filteredTrainGroups.departures ?? []),
+      },
+      rawCounts: {
+        arrivals: displayedTrainGroups.arrivals?.length ?? 0,
+        departures: displayedTrainGroups.departures?.length ?? 0,
+      },
+      timestamp: new Date(now).toISOString(),
+      fallbackAttempted,
     });
   }, [
-    activeList,
-    displayName,
-    isStockholmC,
-    station.signature,
-    stationStopGroups,
-    stationStops,
-    stationStopsError,
-    trainGroups,
-    visible,
     activeTab,
+    displayName,
+    displayedTrainGroups.arrivals,
+    displayedTrainGroups.departures,
     filteredTrainGroups.arrivals,
     filteredTrainGroups.departures,
+    isStockholmC,
+    now,
+    fallbackAnnouncements?.length,
+    fallbackAttempted,
+    stationStops,
+    station.signature,
+    stationStopGroups,
+    visible,
   ]);
 
   useEffect(() => {
-    if (!visible) {
+    if (!IS_DEV || !visible) {
       return;
     }
 
-    const buildEntryLabel = (entry: StationTrainEntry) => {
-      const schedule = combinedTimetables[entry.id];
-      const { arrival, departure } = extractTimingFromStop(schedule);
-      const timing = entry.direction === 'arrivals' ? arrival : departure;
-      const mainTime =
-        timing?.actualLabel ??
-        timing?.plannedLabel ??
-        formatDisplayTime(entry.plannedTime ?? entry.estimatedTime ?? null);
-      const plannedTime = timing?.plannedLabel ?? formatDisplayTime(entry.plannedTime ?? null);
-      const dateLabel = formatDisplayDate(entry.plannedTime ?? entry.estimatedTime ?? null, now);
-      const parts = [
-        entry.direction === 'arrivals' ? 'Ank' : 'Avg',
-        mainTime,
-        plannedTime ? `(plan ${plannedTime})` : null,
-        dateLabel ? `[${dateLabel}]` : null,
-        entry.routeLabel,
-        entry.track ? `Spår ${entry.track}` : null,
-        entry.etaLabel ? `ETA ${entry.etaLabel}` : null,
-      ].filter(Boolean);
-      return parts.join(' · ');
+    const formatTs = (value: number | null | undefined) =>
+      typeof value === 'number' && !Number.isNaN(value) ? new Date(value).toISOString() : null;
+
+    const summarizeList = (list: StationTrainEntry[]) => {
+      const withTs = list
+        .map(entry => ({ entry, ts: getEntryTimestamp(entry) }))
+        .filter(item => item.ts !== null)
+        .sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+      const earliest = withTs[0]?.ts ?? null;
+      const latest = withTs[withTs.length - 1]?.ts ?? null;
+      const sample = withTs.slice(0, 3).map(item => ({
+        time: formatTs(item.ts),
+        label: item.entry.label,
+        dir: item.entry.direction,
+        track: item.entry.track,
+        status: item.entry.status,
+      }));
+      return { count: list.length, earliest: formatTs(earliest), latest: formatTs(latest), sample };
     };
 
-    const logList = (label: string, list: StationTrainEntry[]) => {
-      const lines = list.map(buildEntryLabel);
-      console.log('[StationPanel][Debug][Stoplist]', {
-        station: station.signature,
-        source: stationStopGroups ? 'api' : 'live',
-        list: label,
-        count: list.length,
-        entries: lines,
-      });
-    };
-
-    logList('arrivals', filteredTrainGroups.arrivals ?? []);
-    logList('departures', filteredTrainGroups.departures ?? []);
+    console.log('[StationPanel][Debug][Stoplist]', {
+      station: station.signature,
+      source: stationStopGroups ? 'api' : 'live',
+      arrivals: summarizeList(filteredTrainGroups.arrivals ?? []),
+      departures: summarizeList(filteredTrainGroups.departures ?? []),
+    });
   }, [
-    combinedTimetables,
     filteredTrainGroups.arrivals,
     filteredTrainGroups.departures,
-    now,
     station.signature,
     stationStopGroups,
     visible,
@@ -1002,7 +1185,7 @@ function StationPanelComponent({
   }, [displayName, isStockholmC, station.signature, stationStopsError]);
 
   const stationEvents = useMemo(() => {
-    const normalized = station.signature.trim();
+    const normalized = trimSignature(station.signature);
     if (!normalized) {
       return [];
     }
@@ -1154,7 +1337,7 @@ function StationPanelComponent({
       <Text style={[styles.tabLabel, activeTab === key && styles.tabLabelActive]}>
         {TAB_LABELS[key]}
       </Text>
-      <Text style={styles.tabCount}>{displayedTrainGroups[key].length} tåg</Text>
+      <Text style={styles.tabCount}>{filteredTrainGroups[key].length} tåg</Text>
     </Pressable>
   ));
 

@@ -1093,6 +1093,123 @@ export async function fetchTrainAnnouncements(
   return records.map(mapTrainAnnouncement);
 }
 
+export async function fetchStationAnnouncements(
+  locationSignature: string,
+  options: {
+    forwardHours?: number;
+    backwardHours?: number;
+    limit?: number;
+    modifiedSince?: string | Date | null;
+    targetDate?: Date | string | null;
+    includeAdvertisedOnly?: boolean;
+    signal?: AbortSignal;
+    onChunk?: (records: TrainAnnouncementApiEntry[]) => void;
+  } = {},
+) {
+  const {
+    forwardHours = 24,
+    backwardHours = 5,
+    limit = 8000,
+    modifiedSince = null,
+    targetDate = null,
+    includeAdvertisedOnly = false,
+    signal,
+    onChunk,
+  } = options;
+
+  const now = new Date();
+  const resolvedTargetDate = targetDate ? new Date(targetDate) : null;
+
+  const startDate = resolvedTargetDate
+    ? new Date(
+        Date.UTC(
+          resolvedTargetDate.getUTCFullYear(),
+          resolvedTargetDate.getUTCMonth(),
+          resolvedTargetDate.getUTCDate(),
+          0,
+          0,
+          0,
+        ),
+      )
+    : modifiedSince
+      ? new Date(modifiedSince)
+      : new Date(now.getTime() - backwardHours * 60 * 60 * 1000);
+
+  const endDate = resolvedTargetDate
+    ? new Date(
+        Date.UTC(
+          resolvedTargetDate.getUTCFullYear(),
+          resolvedTargetDate.getUTCMonth(),
+          resolvedTargetDate.getUTCDate(),
+          23,
+          59,
+          59,
+          999,
+        ),
+      )
+    : new Date(now.getTime() + forwardHours * 60 * 60 * 1000);
+
+  const startIso = startDate.toISOString();
+  const endIso = endDate.toISOString();
+
+const buildQuery = (start: string, limitOverride: number) => `<?xml version="1.0" encoding="UTF-8"?>
+<REQUEST>
+  <LOGIN authenticationkey="%API_KEY%" />
+  <QUERY
+    objecttype="TrainAnnouncement"
+    schemaversion="1.9"
+    limit="${limitOverride}"
+    orderby="AdvertisedTimeAtLocation,AdvertisedTrainIdent"
+  >
+    <FILTER>
+      <EQ name="LocationSignature" value="${escapeXml(locationSignature)}" />
+      <EQ name="Deleted" value="false" />
+      <GT name="AdvertisedTimeAtLocation" value="${escapeXml(start)}" />
+      <LT name="AdvertisedTimeAtLocation" value="${escapeXml(endIso)}" />
+      ${includeAdvertisedOnly ? '<EQ name="Advertised" value="true" />' : ''}
+    </FILTER>
+    ${TRAIN_ANNOUNCEMENT_INCLUDES.map(f => `<INCLUDE>${f}</INCLUDE>`).join('')}
+  </QUERY>
+</REQUEST>`;
+
+  const results: TrainAnnouncementApiEntry[] = [];
+  const dedupe = new Set<string>();
+  let cursorStart = startIso;
+
+  const fetchChunk = async () => {
+    const xml = await sendTrafikverketRequest(buildQuery(cursorStart, limit), signal);
+    const raw = parseApiResponse(xml, 'TrainAnnouncement');
+    const mapped = raw.map(mapTrainAnnouncement);
+    const fresh = mapped.filter(item => {
+      const key = `${item.activityType}|${item.advertisedTrainIdent}|${item.operationalTrainNumber}|${item.advertisedTimeAtLocation}|${item.locationSignature}`;
+      if (dedupe.has(key)) {
+        return false;
+      }
+      dedupe.add(key);
+      return true;
+    });
+    results.push(...fresh);
+    onChunk?.(fresh);
+    if (mapped.length < limit) {
+      return null;
+    }
+    const lastTs = mapped[mapped.length - 1]?.advertisedTimeAtLocation;
+    if (!lastTs) {
+      return null;
+    }
+    const backtracked = new Date(Date.parse(lastTs) - 1_000).toISOString();
+    cursorStart = backtracked;
+    return cursorStart;
+  };
+
+  let next = await fetchChunk();
+  while (next) {
+    next = await fetchChunk();
+  }
+
+  return results;
+}
+
 const ROUTE_BATCH_SIZE = 40;
 
 export async function fetchTrainAnnouncementsByIdentifiers(
