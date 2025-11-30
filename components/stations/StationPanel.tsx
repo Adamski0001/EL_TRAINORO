@@ -22,7 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { trainRouteRegistry, type RouteInfo } from '../../state/trainRouteRegistry';
 import { useTrainPositions } from '../../hooks/useTrainPositions';
 import { useTrafficEvents } from '../../hooks/useTrafficEvents';
-import type { TrainPosition } from '../../types/trains';
+import type { TrainPosition, TrainStop } from '../../types/trains';
 import type { TrafficEvent } from '../../types/traffic';
 import type {
   Station,
@@ -49,9 +49,13 @@ import {
 } from '../../hooks/useStationTrainTimetables';
 import { haptics } from '../../lib/haptics';
 
+const API_BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL ?? '').replace(/\/+$/, '');
+
 const TIMELINE_COLUMN_WIDTH = 26;
 const STOP_ROW_HORIZONTAL_PADDING = 16;
 const EARTH_RADIUS_METERS = 6_371_000;
+const PAST_GRACE_MINUTES = 15;
+const UPCOMING_WINDOW_MINUTES = 12 * 60;
 
 type TabKey = 'departures' | 'arrivals';
 
@@ -77,6 +81,30 @@ const TRAFFIC_SEVERITY_COLORS: Record<TrafficEvent['severity'], string> = {
   low: '#7DD87C',
 };
 
+type StationStopApiEntry = {
+  advertisedTrainIdent: string | null;
+  operationalTrainNumber: string | null;
+  fromLocation: string[];
+  toLocation: string[];
+  activityType: 'Arrival' | 'Departure';
+  advertisedTimeAtLocation: string | null;
+  estimatedTimeAtLocation: string | null;
+  timeAtLocation: string | null;
+  trackAtLocation: string | null;
+  canceled: boolean;
+  deviation: string[];
+  productInformation: string[];
+  operator: string | null;
+};
+
+type StationStopApiResponse = {
+  station: string;
+  arrivals: StationStopApiEntry[];
+  departures: StationStopApiEntry[];
+};
+
+type StopStatus = 'on-time' | 'delayed' | 'canceled';
+
 type StationTrainEntry = {
   id: string;
   label: string;
@@ -88,6 +116,21 @@ type StationTrainEntry = {
   distanceMeters: number | null;
   direction: TabKey;
   train: TrainPosition;
+  isLive: boolean;
+  sortTimestamp: number;
+  track: string | null;
+  status: StopStatus;
+  etaLabel: string | null;
+  plannedTime: Date | null;
+  estimatedTime: Date | null;
+  canceled: boolean;
+  delayMinutes: number | null;
+};
+
+type StationStopGroups = {
+  arrivals: StationTrainEntry[];
+  departures: StationTrainEntry[];
+  timetables: Record<string, StationTrainSchedule>;
 };
 
 const toRadians = (value: number) => (value * Math.PI) / 180;
@@ -157,6 +200,69 @@ const formatUpdatedLabel = (timestamp: number | null) => {
   return `Uppdaterad ${hours} h ${remainder} min sedan`;
 };
 
+const parseApiDate = (value: string | null | undefined): Date | null => {
+  if (!value) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+  return new Date(timestamp);
+};
+
+const buildEtaLabel = (target: Date | null, canceled: boolean, now: number) => {
+  if (canceled) {
+    return 'Inställt';
+  }
+  if (!target) {
+    return null;
+  }
+  const diffMinutes = Math.round((target.getTime() - now) / 60000);
+  if (diffMinutes <= -1) {
+    return 'Nyss';
+  }
+  if (diffMinutes <= 0) {
+    return 'Nu';
+  }
+  if (diffMinutes < 60) {
+    return `Om ${diffMinutes} min`;
+  }
+  const hours = Math.floor(diffMinutes / 60);
+  const minutes = diffMinutes % 60;
+  if (minutes === 0) {
+    return `Om ${hours} h`;
+  }
+  return `Om ${hours} h ${minutes} min`;
+};
+
+const computeStopStatus = (
+  planned: Date | null,
+  estimated: Date | null,
+  actual: Date | null,
+  canceled: boolean,
+): { status: StopStatus; delayMinutes: number | null } => {
+  if (canceled) {
+    return { status: 'canceled', delayMinutes: null };
+  }
+  const reference = actual ?? estimated;
+  if (planned && reference) {
+    const diffMinutes = Math.round((reference.getTime() - planned.getTime()) / 60000);
+    if (diffMinutes > 0) {
+      return { status: 'delayed', delayMinutes: diffMinutes };
+    }
+  }
+  return { status: 'on-time', delayMinutes: null };
+};
+
+const compareAdvertisedTimes = (a: string | null, b: string | null) => {
+  const aTimestamp = a ? Date.parse(a) : Number.NaN;
+  const bTimestamp = b ? Date.parse(b) : Number.NaN;
+  const safeA = Number.isNaN(aTimestamp) ? Number.MAX_SAFE_INTEGER : aTimestamp;
+  const safeB = Number.isNaN(bTimestamp) ? Number.MAX_SAFE_INTEGER : bTimestamp;
+  return safeA - safeB;
+};
+
 const determineTrainDirection = (
   train: TrainPosition,
   stationSignature: string,
@@ -186,6 +292,28 @@ const determineTrainDirection = (
     return 'arrivals';
   }
   return 'departures';
+};
+
+const resolveDirectionForStop = (
+  schedule: StationTrainSchedule,
+  train: TrainPosition,
+  stationSignature: string,
+  stationCoordinate: StationCoordinate | null,
+  route: RouteInfo | null,
+): TabKey => {
+  if (schedule.isFirstStop) {
+    return 'departures';
+  }
+  if (schedule.isLastStop) {
+    return 'arrivals';
+  }
+  if (route?.to === stationSignature) {
+    return 'arrivals';
+  }
+  if (route?.from === stationSignature) {
+    return 'departures';
+  }
+  return determineTrainDirection(train, stationSignature, stationCoordinate, route) ?? 'arrivals';
 };
 
 type TimingInfo = {
@@ -278,6 +406,10 @@ function StationPanelComponent({
   const { trains } = useTrainPositions();
   const { events } = useTrafficEvents();
   const { stations } = useStations();
+  const [stationStops, setStationStops] = useState<StationStopApiResponse | null>(null);
+  const [stationStopsLoading, setStationStopsLoading] = useState(false);
+  const [stationStopsError, setStationStopsError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const routeSnapshot = useSyncExternalStore(
     trainRouteRegistry.subscribe,
     () => trainRouteRegistry.getSnapshot(),
@@ -295,6 +427,19 @@ function StationPanelComponent({
   useEffect(() => {
     setActiveTab('departures');
   }, [station.id]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+    setNow(Date.now());
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 30_000);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [visible]);
 
   useEffect(() => {
     trainRouteRegistry.ensureRoutesFor(trains);
@@ -335,10 +480,32 @@ function StationPanelComponent({
     return trimmed.length <= 4 ? trimmed.toUpperCase() : trimmed;
   }, []);
 
+  const loadStationStops = useCallback(
+    async (signature: string, signal?: AbortSignal): Promise<StationStopApiResponse> => {
+      const normalized = signature.trim();
+      if (!normalized) {
+        throw new Error('Station saknas.');
+      }
+      if (!API_BASE_URL) {
+        console.warn(
+          '[StationPanel] EXPO_PUBLIC_API_BASE_URL saknas – använder relativ /api/station, sätt env för fullständiga tidtabeller.',
+        );
+      }
+      const endpoint = `${API_BASE_URL ? `${API_BASE_URL}` : ''}/api/station/${encodeURIComponent(normalized)}`;
+      const response = await fetch(endpoint, { signal });
+      if (!response.ok) {
+        const message = await response.text().catch(() => '');
+        throw new Error(message || `Kunde inte hämta station (${response.status})`);
+      }
+      return (await response.json()) as StationStopApiResponse;
+    },
+    [],
+  );
+
   const buildTrainRouteLabel = useCallback(
-    (route: RouteInfo | null, train: TrainPosition) => {
-      const fromLabel = route?.from ? resolveStationName(route.from) : null;
-      const toLabel = route?.to ? resolveStationName(route.to) : null;
+    (route: RouteInfo | null, train: TrainPosition, fromOverride?: string | null, toOverride?: string | null) => {
+      const fromLabel = fromOverride ?? (route?.from ? resolveStationName(route.from) : null);
+      const toLabel = toOverride ?? (route?.to ? resolveStationName(route.to) : null);
       if (fromLabel && toLabel) {
         return `${fromLabel} → ${toLabel}`;
       }
@@ -358,44 +525,155 @@ function StationPanelComponent({
     station.officialName?.trim() ??
     station.displayName ??
     station.signature;
+  const isStockholmC =
+    station.signature?.trim().toLowerCase() === 'cst' ||
+    (displayName?.trim().toLowerCase() ?? '') === 'stockholm c';
   const crowding = CROWDING_MAP[station.trafficVolume];
   const crowdingLabel = crowding?.label ?? 'Okänt';
   const crowdingDescription = crowding?.description ?? 'Ingen aktuell prognos.';
   const crowdingColor = crowding?.color ?? '#62CDFF';
 
-  const trainGroups = useMemo(() => {
+  useEffect(() => {
+    const signature = station.signature?.trim();
+    if (!visible || !signature) {
+      setStationStops(null);
+      setStationStopsError(null);
+      setStationStopsLoading(false);
+      return () => {};
+    }
+    const controller = new AbortController();
+    setStationStopsLoading(true);
+    setStationStopsError(null);
+    loadStationStops(signature, controller.signal)
+      .then(data => {
+        setStationStops(data);
+      })
+      .catch(error => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setStationStops(null);
+        setStationStopsError(
+          error instanceof Error ? error.message : 'Kunde inte hämta stationstider',
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setStationStopsLoading(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [loadStationStops, station.signature, visible]);
+
+  useEffect(() => {
+    if (stationStopsError) {
+      console.warn('[StationPanel] station stop load failed', stationStopsError);
+    }
+  }, [stationStopsError]);
+
+  const { timetables } = useStationTrainTimetables(trains, station.signature, {
+    enabled: visible && !stationStops,
+    includeStationScope: true,
+    windowMinutes: 2_880,
+  });
+
+  const liveTrainGroups = useMemo(() => {
     const arrivals: StationTrainEntry[] = [];
     const departures: StationTrainEntry[] = [];
     const normalizedSignature = station.signature.trim();
-    const now = Date.now();
+    const nowMs = now;
+    const liveTrainMap = new Map<string, TrainPosition>();
+    trains.forEach(train => liveTrainMap.set(train.id, train));
 
-    trains.forEach(train => {
-      const route = trainRouteRegistry.getRoute(train.id);
-      if (!route?.from && !route?.to) {
-        return;
-      }
-      const direction = determineTrainDirection(train, normalizedSignature, station.coordinate, route);
-      if (!direction) {
-        return;
-      }
-      const updatedAt = Number.isNaN(Date.parse(train.updatedAt)) ? now : Date.parse(train.updatedAt);
+    Object.entries(timetables).forEach(([id, schedule]) => {
+      const stop = schedule.stop;
+      const liveTrain = liveTrainMap.get(id) ?? null;
+      const trainId =
+        liveTrain?.id ?? schedule.advertisedTrainIdent ?? schedule.operationalTrainNumber ?? id;
+      const route = trainRouteRegistry.getRoute(trainId);
+      const baseTrain: TrainPosition =
+        liveTrain ??
+        ({
+          id: trainId,
+          label: schedule.advertisedTrainIdent ?? schedule.operationalTrainNumber ?? `Tåg ${trainId}`,
+          advertisedTrainIdent: schedule.advertisedTrainIdent,
+          operationalTrainNumber: schedule.operationalTrainNumber,
+          operationalTrainDepartureDate: null,
+          journeyPlanNumber: null,
+          journeyPlanDepartureDate: null,
+          trainOwner: schedule.operator,
+          coordinate: station.coordinate ?? { latitude: 0, longitude: 0 },
+          speed: null,
+          bearing: null,
+          updatedAt: new Date(Math.max(schedule.updatedAt ?? nowMs, nowMs)).toISOString(),
+        } as TrainPosition);
+
+      const direction = resolveDirectionForStop(
+        schedule,
+        baseTrain,
+        normalizedSignature,
+        station.coordinate,
+        route,
+      );
+      const updatedAt = Number.isNaN(Date.parse(baseTrain.updatedAt))
+        ? nowMs
+        : Date.parse(baseTrain.updatedAt);
       const distanceMeters =
-        station.coordinate && train.coordinate
-          ? computeDistanceMeters(train.coordinate, station.coordinate)
+        station.coordinate && liveTrain?.coordinate
+          ? computeDistanceMeters(liveTrain.coordinate, station.coordinate)
           : null;
+      const stopTime =
+        direction === 'departures'
+          ? stop.departureActual ?? stop.departureEstimated ?? stop.departureAdvertised
+          : stop.arrivalActual ?? stop.arrivalEstimated ?? stop.arrivalAdvertised;
+      const sortTimestamp = stopTime ? stopTime.getTime() : Number.MAX_SAFE_INTEGER;
+      const plannedTime =
+        direction === 'departures' ? stop.departureAdvertised : stop.arrivalAdvertised;
+      const estimatedTime =
+        direction === 'departures' ? stop.departureEstimated : stop.arrivalEstimated;
+      const actualTime = direction === 'departures' ? stop.departureActual : stop.arrivalActual;
+      const targetTime = stopTime ?? plannedTime ?? null;
+      const { status, delayMinutes } = computeStopStatus(
+        plannedTime,
+        estimatedTime,
+        actualTime,
+        stop.canceled,
+      );
+      const etaLabel = buildEtaLabel(targetTime, stop.canceled, nowMs);
+      const track = stop.track ?? null;
       const operatorLabel =
-        normalizeOperatorLabel(route?.operator) ?? normalizeOperatorLabel(train.trainOwner) ?? null;
+        normalizeOperatorLabel(route?.operator) ??
+        normalizeOperatorLabel(schedule.operator) ??
+        normalizeOperatorLabel(baseTrain.trainOwner) ??
+        null;
       const entry: StationTrainEntry = {
-        id: train.id,
-        label: train.label,
+        id: trainId,
+        label: baseTrain.label,
         operator: operatorLabel,
-        routeLabel: buildTrainRouteLabel(route, train),
+        routeLabel: buildTrainRouteLabel(
+          route,
+          baseTrain,
+          schedule.fromStationName,
+          schedule.toStationName,
+        ),
         updatedLabel: formatUpdatedLabel(updatedAt),
         updatedAt,
         distanceLabel: distanceMeters !== null ? formatDistanceLabel(distanceMeters) : null,
         distanceMeters,
         direction,
-        train,
+        train: baseTrain,
+        isLive: Boolean(liveTrain),
+        sortTimestamp,
+        track,
+        status,
+        etaLabel,
+        plannedTime: plannedTime ?? null,
+        estimatedTime: estimatedTime ?? null,
+        canceled: stop.canceled,
+        delayMinutes,
       };
       if (direction === 'arrivals') {
         arrivals.push(entry);
@@ -406,77 +684,231 @@ function StationPanelComponent({
 
     const sortEntries = (list: StationTrainEntry[]) =>
       list.sort((a, b) => {
-        if (a.distanceMeters !== null && b.distanceMeters !== null) {
-          return a.distanceMeters - b.distanceMeters;
+        if (a.sortTimestamp !== b.sortTimestamp) {
+          return a.sortTimestamp - b.sortTimestamp;
         }
-        if (a.distanceMeters !== null) {
-          return -1;
-        }
-        if (b.distanceMeters !== null) {
-          return 1;
-        }
-        if (a.updatedAt !== null && b.updatedAt !== null) {
-          return a.updatedAt - b.updatedAt;
-        }
-        return 0;
+        const aTime = a.updatedAt ?? 0;
+        const bTime = b.updatedAt ?? 0;
+        return aTime - bTime;
       });
 
     sortEntries(arrivals);
     sortEntries(departures);
     return { arrivals, departures };
   }, [
-    trains,
-    station.signature,
-    station.coordinate?.latitude,
-    station.coordinate?.longitude,
-    routeSnapshot.version,
-    resolveStationName,
     buildTrainRouteLabel,
     normalizeOperatorLabel,
+    station.coordinate,
+    station.signature,
+    timetables,
+    trains,
+    now,
   ]);
 
-  const timetableTrains = useMemo(
-    () => [...trainGroups.arrivals, ...trainGroups.departures].map(entry => entry.train),
-    [trainGroups],
-  );
-  const { timetables } = useStationTrainTimetables(timetableTrains, station.signature, {
-    enabled: visible,
-  });
+  const stationStopGroups = useMemo<StationStopGroups | null>(() => {
+    if (!stationStops) {
+      return null;
+    }
 
-  const filteredTrainGroups = useMemo(() => {
-    const hasTiming = (schedule: StationTrainSchedule | undefined) => {
-      if (!schedule) {
-        return false;
-      }
-      const { stop, isFirstStop, isLastStop } = schedule;
-      const arrivalExists =
-        stop.arrivalAdvertised || stop.arrivalEstimated || stop.arrivalActual || (isFirstStop && !!(stop.departureAdvertised || stop.departureEstimated || stop.departureActual));
-      const departureExists =
-        !isLastStop &&
-        (stop.departureAdvertised ||
-          stop.departureEstimated ||
-          stop.departureActual ||
-          (isFirstStop &&
-            (stop.arrivalAdvertised || stop.arrivalEstimated || stop.arrivalActual)));
+    const buildEntry = (announcement: StationStopApiEntry, direction: TabKey, index: number) => {
+      const advertisedTime = parseApiDate(announcement.advertisedTimeAtLocation);
+      const estimatedTime = parseApiDate(announcement.estimatedTimeAtLocation);
+      const actualTime = parseApiDate(announcement.timeAtLocation);
+      const targetTime = actualTime ?? estimatedTime ?? advertisedTime ?? null;
+      const idBase =
+        announcement.operationalTrainNumber ??
+        announcement.advertisedTrainIdent ??
+        `${direction}-${index}`;
+      const entryId = `${direction}-${idBase}-${announcement.advertisedTimeAtLocation ?? index}`;
+      const operatorLabel =
+        normalizeOperatorLabel(announcement.operator ?? announcement.productInformation?.[0]) ??
+        null;
+      const fromSignature = announcement.fromLocation[0] ?? null;
+      const toSignature = announcement.toLocation[0] ?? null;
+      const fromName = fromSignature ? resolveStationName(fromSignature) : null;
+      const toName = toSignature ? resolveStationName(toSignature) : null;
 
-      if (isLastStop) {
-        return Boolean(arrivalExists);
-      }
-      if (isFirstStop) {
-        return Boolean(arrivalExists && (stop.departureAdvertised || stop.departureEstimated || stop.departureActual));
-      }
-      return Boolean(arrivalExists && departureExists);
+      const stop: TrainStop = {
+        id: entryId,
+        stationName: displayName,
+        locationSignature: station.signature,
+        track: announcement.trackAtLocation ?? null,
+        arrivalAdvertised: direction === 'arrivals' ? advertisedTime : null,
+        arrivalEstimated: direction === 'arrivals' ? estimatedTime : null,
+        arrivalActual: direction === 'arrivals' ? actualTime : null,
+        departureAdvertised: direction === 'departures' ? advertisedTime : null,
+        departureEstimated: direction === 'departures' ? estimatedTime : null,
+        departureActual: direction === 'departures' ? actualTime : null,
+        canceled: announcement.canceled,
+      };
+
+      const schedule: StationTrainSchedule = {
+        stop,
+        updatedAt: targetTime?.getTime() ?? null,
+        isFirstStop: direction === 'departures',
+        isLastStop: direction === 'arrivals',
+      };
+
+      const baseTrain: TrainPosition = {
+        id: entryId,
+        label:
+          announcement.advertisedTrainIdent ??
+          announcement.operationalTrainNumber ??
+          `Tåg ${entryId}`,
+        advertisedTrainIdent: announcement.advertisedTrainIdent,
+        operationalTrainNumber: announcement.operationalTrainNumber,
+        operationalTrainDepartureDate: null,
+        journeyPlanNumber: null,
+        journeyPlanDepartureDate: null,
+        trainOwner: operatorLabel,
+        coordinate: station.coordinate ?? { latitude: 0, longitude: 0 },
+        speed: null,
+        bearing: null,
+        updatedAt: (targetTime ?? new Date()).toISOString(),
+      };
+
+      const { status, delayMinutes } = computeStopStatus(
+        direction === 'departures' ? stop.departureAdvertised : stop.arrivalAdvertised,
+        direction === 'departures' ? stop.departureEstimated : stop.arrivalEstimated,
+        direction === 'departures' ? stop.departureActual : stop.arrivalActual,
+        stop.canceled,
+      );
+
+      const etaLabel = buildEtaLabel(targetTime, stop.canceled, now);
+      const sortTimestamp = advertisedTime ? advertisedTime.getTime() : Number.MAX_SAFE_INTEGER;
+
+      const routeLabel =
+        direction === 'arrivals'
+          ? buildTrainRouteLabel(null, baseTrain, fromName, displayName)
+          : buildTrainRouteLabel(null, baseTrain, displayName, toName);
+
+      const entry: StationTrainEntry = {
+        id: entryId,
+        label:
+          announcement.advertisedTrainIdent ??
+          announcement.operationalTrainNumber ??
+          idBase.toString(),
+        operator: operatorLabel,
+        routeLabel,
+        updatedLabel: targetTime ? formatUpdatedLabel(targetTime.getTime()) : 'Uppdaterad nyligen',
+        updatedAt: targetTime ? targetTime.getTime() : null,
+        distanceLabel: null,
+        distanceMeters: null,
+        direction,
+        train: baseTrain,
+        isLive: false,
+        sortTimestamp,
+        track: announcement.trackAtLocation ?? null,
+        status,
+        etaLabel,
+        plannedTime: advertisedTime,
+        estimatedTime: estimatedTime ?? actualTime,
+        canceled: stop.canceled,
+        delayMinutes,
+      };
+
+      return { entry, schedule };
     };
 
-    const filterBySchedule = (entry: StationTrainEntry) => hasTiming(timetables[entry.id]);
+    const timetableMap: Record<string, StationTrainSchedule> = {};
+
+    const sortedArrivals = [...stationStops.arrivals].sort((a, b) =>
+      compareAdvertisedTimes(a.advertisedTimeAtLocation, b.advertisedTimeAtLocation),
+    );
+    const sortedDepartures = [...stationStops.departures].sort((a, b) =>
+      compareAdvertisedTimes(a.advertisedTimeAtLocation, b.advertisedTimeAtLocation),
+    );
+
+    const arrivalEntries = sortedArrivals.map((announcement, index) => {
+      const { entry, schedule } = buildEntry(announcement, 'arrivals', index);
+      timetableMap[entry.id] = schedule;
+      return entry;
+    });
+
+    const departureEntries = sortedDepartures.map((announcement, index) => {
+      const { entry, schedule } = buildEntry(announcement, 'departures', index);
+      timetableMap[entry.id] = schedule;
+      return entry;
+    });
 
     return {
-      arrivals: trainGroups.arrivals.filter(filterBySchedule),
-      departures: trainGroups.departures.filter(filterBySchedule),
+      arrivals: arrivalEntries,
+      departures: departureEntries,
+      timetables: timetableMap,
     };
-  }, [timetables, trainGroups]);
+  }, [
+    buildTrainRouteLabel,
+    displayName,
+    normalizeOperatorLabel,
+    now,
+    resolveStationName,
+    station.coordinate,
+    station.signature,
+    stationStops,
+  ]);
 
-  const activeList = activeTab === 'departures' ? filteredTrainGroups.departures : filteredTrainGroups.arrivals;
+  const combinedTimetables = stationStopGroups?.timetables ?? timetables;
+  const trainGroups = stationStopGroups
+    ? { arrivals: stationStopGroups.arrivals, departures: stationStopGroups.departures }
+    : liveTrainGroups;
+
+  const displayedTrainGroups = useMemo(() => {
+    if (stationStopGroups) {
+      return {
+        arrivals: stationStopGroups.arrivals,
+        departures: stationStopGroups.departures,
+      };
+    }
+    return {
+      arrivals: liveTrainGroups.arrivals,
+      departures: liveTrainGroups.departures,
+    };
+  }, [liveTrainGroups.arrivals, liveTrainGroups.departures, stationStopGroups]);
+
+  const activeList =
+    activeTab === 'departures' ? displayedTrainGroups.departures : displayedTrainGroups.arrivals;
+
+  useEffect(() => {
+    if (!visible || !isStockholmC) {
+      return;
+    }
+    console.log('[StationPanel][Diag][Stockholm C] stop list snapshot', {
+      station: station.signature,
+      displayName,
+      source: stationStopGroups ? 'api' : 'live',
+      arrivals: activeTab === 'arrivals' ? activeList : displayedTrainGroups.arrivals ?? [],
+      departures: activeTab === 'departures' ? activeList : displayedTrainGroups.departures ?? [],
+      rawArrivals: trainGroups?.arrivals ?? [],
+      rawDepartures: trainGroups?.departures ?? [],
+      stationStops,
+      stationStopsError,
+      timestamp: new Date().toISOString(),
+    });
+  }, [
+    activeList,
+    displayName,
+    isStockholmC,
+    station.signature,
+    stationStopGroups,
+    stationStops,
+    stationStopsError,
+    trainGroups,
+    visible,
+    activeTab,
+    displayedTrainGroups.arrivals,
+    displayedTrainGroups.departures,
+  ]);
+
+  useEffect(() => {
+    if (stationStopsError && isStockholmC) {
+      console.error('[StationPanel][Diag][Stockholm C] stop load error', {
+        station: station.signature,
+        displayName,
+        error: stationStopsError,
+      });
+    }
+  }, [displayName, isStockholmC, station.signature, stationStopsError]);
+
   const stationEvents = useMemo(() => {
     const normalized = station.signature.trim();
     if (!normalized) {
@@ -583,6 +1015,17 @@ function StationPanelComponent({
   const distanceDotStyle = (direction: TabKey) =>
     direction === 'arrivals' ? styles.timelineDotArriving : styles.timelineDotDeparting;
 
+  const statusDotStyle = (status: StopStatus) => {
+    switch (status) {
+      case 'delayed':
+        return styles.statusDotDelayed;
+      case 'canceled':
+        return styles.statusDotCanceled;
+      default:
+        return styles.statusDotOnTime;
+    }
+  };
+
   const eventList = stationEvents.map(event => (
     <View key={event.id} style={styles.eventCard}>
       <View style={styles.eventHeader}>
@@ -619,7 +1062,7 @@ function StationPanelComponent({
       <Text style={[styles.tabLabel, activeTab === key && styles.tabLabelActive]}>
         {TAB_LABELS[key]}
       </Text>
-      <Text style={styles.tabCount}>{filteredTrainGroups[key].length} tåg</Text>
+      <Text style={styles.tabCount}>{displayedTrainGroups[key].length} tåg</Text>
     </Pressable>
   ));
 
@@ -684,14 +1127,54 @@ function StationPanelComponent({
             {activeList.length ? (
               activeList.map((entry, index) => {
                 const operatorLabel = entry.operator ?? '—';
-                const schedule = timetables[entry.id];
+                const schedule = combinedTimetables[entry.id];
                 const { arrival, departure } = extractTimingFromStop(schedule);
+                const stopCanceled = schedule?.stop?.canceled ?? entry.canceled;
+                const stopArrivalTime =
+                  schedule?.stop.arrivalActual ??
+                  schedule?.stop.arrivalEstimated ??
+                  schedule?.stop.arrivalAdvertised ??
+                  null;
+                const stopDepartureTime =
+                  schedule?.stop.departureActual ??
+                  schedule?.stop.departureEstimated ??
+                  schedule?.stop.departureAdvertised ??
+                  null;
+                const arrivalEta = buildEtaLabel(stopArrivalTime, stopCanceled ?? false, now);
+                const departureEta = buildEtaLabel(
+                  stopDepartureTime,
+                  stopCanceled ?? false,
+                  now,
+                );
+                const primaryTiming = entry.direction === 'arrivals' ? arrival : departure;
+                const plannedLabel =
+                  primaryTiming?.plannedLabel ?? formatDisplayTime(entry.plannedTime ?? null);
+                const actualTimeLabel =
+                  primaryTiming?.actualLabel ??
+                  primaryTiming?.plannedLabel ??
+                  formatDisplayTime(entry.plannedTime ?? null);
+                const delayMinutes =
+                  primaryTiming?.delayMinutes ?? entry.delayMinutes ?? null;
+                const status: StopStatus =
+                  entry.status ??
+                  (stopCanceled
+                    ? 'canceled'
+                    : delayMinutes && delayMinutes > 0
+                      ? 'delayed'
+                      : 'on-time');
+                const etaLabel =
+                  entry.direction === 'arrivals'
+                    ? arrivalEta ?? entry.etaLabel
+                    : departureEta ?? entry.etaLabel;
+                const showDelayBadge =
+                  status === 'delayed' && delayMinutes !== null && delayMinutes > 0;
+                const trainTitle = entry.label ? `Tåg ${entry.label}` : 'Tåg';
                 const trainSubtitle =
-                  operatorLabel !== '—'
-                    ? `${entry.label ? `Tåg ${entry.label}` : 'Tåg'} · ${operatorLabel}`
-                    : entry.label
-                      ? `Tåg ${entry.label}`
-                      : 'Tåg';
+                  operatorLabel !== '—' ? `${trainTitle} · ${operatorLabel}` : trainTitle;
+                const trackLabel = entry.track ? `Spår ${entry.track}` : null;
+                const subtitleLabel =
+                  [trackLabel, trainSubtitle].filter(Boolean).join(' • ') || trainSubtitle;
+
                 return (
                   <Pressable
                     key={entry.id}
@@ -700,6 +1183,7 @@ function StationPanelComponent({
                       styles.stopRow,
                       index !== activeList.length - 1 && styles.stopRowDivider,
                       pressed && styles.stopRowPressed,
+                      status === 'canceled' && styles.stopRowCanceled,
                     ]}
                   >
                     <View style={styles.timelineColumn}>
@@ -729,7 +1213,7 @@ function StationPanelComponent({
                         {entry.routeLabel}
                       </Text>
                       <Text style={styles.stopTrack} numberOfLines={1} ellipsizeMode="tail">
-                        {trainSubtitle}
+                        {subtitleLabel}
                       </Text>
                     </View>
 
@@ -738,36 +1222,54 @@ function StationPanelComponent({
                         {arrival ? (
                           <>
                             <View style={styles.timeRow}>
+                              <View style={[styles.statusDot, statusDotStyle(status)]} />
                               <Text style={styles.timeLabel}>Ank</Text>
-                              <Text style={[styles.timeActual, styles.timeActualArriving]}>
-                                {arrival.actualLabel}
+                              <Text
+                                style={[
+                                  styles.timeActual,
+                                  styles.timeActualArriving,
+                                  status === 'canceled' && styles.timeActualCanceled,
+                                ]}
+                              >
+                                {arrival.actualLabel ?? actualTimeLabel}
                               </Text>
-                              {arrival.hasDelay ? (
+                              {showDelayBadge ? (
                                 <View style={styles.delayBadge}>
-                                  <Text style={styles.delayText}>+{arrival.delayMinutes}m</Text>
+                                  <Text style={styles.delayText}>+{delayMinutes}m</Text>
                                 </View>
                               ) : null}
                             </View>
-                            {arrival.hasDelay ? (
-                              <Text style={styles.timePlanned}>Plan {arrival.plannedLabel}</Text>
+                            {showDelayBadge && plannedLabel ? (
+                              <Text style={styles.timePlanned}>Plan {plannedLabel}</Text>
                             ) : null}
+                            {etaLabel ? <Text style={styles.timePlannedSub}>{etaLabel}</Text> : null}
                           </>
                         ) : null}
                         {departure ? (
                           <>
                             <View style={[styles.timeRow, styles.timeRowTight]}>
+                              <View style={[styles.statusDot, statusDotStyle(status)]} />
                               <Text style={styles.timeLabel}>Avg</Text>
-                              <Text style={[styles.timeActual, styles.timeActualDeparting]}>
-                                {departure.actualLabel}
+                              <Text
+                                style={[
+                                  styles.timeActual,
+                                  styles.timeActualDeparting,
+                                  status === 'canceled' && styles.timeActualCanceled,
+                                ]}
+                              >
+                                {departure.actualLabel ?? actualTimeLabel}
                               </Text>
-                              {departure.hasDelay ? (
+                              {showDelayBadge ? (
                                 <View style={styles.delayBadge}>
-                                  <Text style={styles.delayText}>+{departure.delayMinutes}m</Text>
+                                  <Text style={styles.delayText}>+{delayMinutes}m</Text>
                                 </View>
                               ) : null}
                             </View>
-                            {departure.hasDelay ? (
-                              <Text style={styles.timePlanned}>Plan {departure.plannedLabel}</Text>
+                            {showDelayBadge && plannedLabel ? (
+                              <Text style={styles.timePlanned}>Plan {plannedLabel}</Text>
+                            ) : null}
+                            {etaLabel ? (
+                              <Text style={styles.timePlannedSub}>{etaLabel}</Text>
                             ) : null}
                           </>
                         ) : null}
@@ -779,10 +1281,14 @@ function StationPanelComponent({
             ) : (
               <View style={styles.emptyState}>
                 <Text style={styles.emptyTitle}>
-                  Inga {activeTab === 'departures' ? 'avgångar' : 'ankomster'} just nu
+                  {stationStopsLoading
+                    ? 'Laddar stationstider...'
+                    : `Inga ${activeTab === 'departures' ? 'avgångar' : 'ankomster'} just nu`}
                 </Text>
                 <Text style={styles.emptySubtitle}>
-                  Träffa nästa tåg direkt från kartan när vi får in tidtabeller.
+                  {stationStopsLoading
+                    ? 'Hämtar ankomster och avgångar för stationen.'
+                    : 'Träffa nästa tåg direkt från kartan när vi får in tidtabeller.'}
                 </Text>
               </View>
             )}
@@ -1045,6 +1551,22 @@ const styles = StyleSheet.create({
   timeRowTight: {
     marginTop: 6,
   },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 2,
+    backgroundColor: '#8EF4A7',
+  },
+  statusDotOnTime: {
+    backgroundColor: '#8EF4A7',
+  },
+  statusDotDelayed: {
+    backgroundColor: '#FF5B5B',
+  },
+  statusDotCanceled: {
+    backgroundColor: 'rgba(255,255,255,0.45)',
+  },
   timePlanned: {
     color: 'rgba(255,255,255,0.6)',
     fontSize: 11,
@@ -1064,6 +1586,9 @@ const styles = StyleSheet.create({
   },
   timeActualDeparting: {
     color: '#FFE066',
+  },
+  timeActualCanceled: {
+    color: 'rgba(255,255,255,0.55)',
   },
   timeLabel: {
     color: 'rgba(255,255,255,0.68)',
@@ -1159,5 +1684,8 @@ const styles = StyleSheet.create({
   },
   stopRowPressed: {
     backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  stopRowCanceled: {
+    opacity: 0.72,
   },
 });

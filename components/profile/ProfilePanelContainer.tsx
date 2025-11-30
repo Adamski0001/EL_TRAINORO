@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import type { TrafficSheetSnapPoint } from '../traffic/sheetSnapPoints';
 import type { TrainPosition } from '../../types/trains';
+import type { OnboardingStage } from '../onboarding/OnboardingOverlay';
 import { ProfilePanel } from './ProfilePanel';
 
 export type ProfilePanelContainerProps = {
@@ -8,8 +9,8 @@ export type ProfilePanelContainerProps = {
   initialSnap?: Exclude<TrafficSheetSnapPoint, 'hidden'>;
   onClose: () => void;
   onSnapPointChange?: (point: TrafficSheetSnapPoint) => void;
-  onOpenTrain: (train: TrainPosition) => void;
-  onRequestAuth?: () => void;
+  onOpenTrain: (train: TrainPosition, options?: { allowScheduleFallback?: boolean; focus?: boolean }) => void;
+  onRequestAuth?: (startStage?: OnboardingStage) => void;
 };
 
 function ProfilePanelContainerComponent({

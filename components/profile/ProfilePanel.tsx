@@ -33,6 +33,7 @@ import { useUserProfile } from '../../hooks/useUserProfile';
 import { getSupabaseClient, isSupabaseConfigured } from '../../lib/supabaseClient';
 import type { TrainPosition } from '../../types/trains';
 import type { TrafficSheetSnapPoint } from '../traffic/sheetSnapPoints';
+import type { OnboardingStage } from '../onboarding/OnboardingOverlay';
 import { haptics } from '../../lib/haptics';
 import {
   SHEET_BOTTOM_LOCK_REGION,
@@ -60,8 +61,8 @@ type ProfilePanelProps = {
   initialSnap?: Exclude<TrafficSheetSnapPoint, 'hidden'>;
   onClose: () => void;
   onSnapPointChange?: (point: TrafficSheetSnapPoint) => void;
-  onOpenTrain: (train: TrainPosition) => void;
-  onRequestAuth?: () => void;
+  onOpenTrain: (train: TrainPosition, options?: { allowScheduleFallback?: boolean; focus?: boolean }) => void;
+  onRequestAuth?: (startStage?: OnboardingStage) => void;
 };
 
 const formatRelativeTime = (timestamp: number) => {
