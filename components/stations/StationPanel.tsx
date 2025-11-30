@@ -274,6 +274,20 @@ const sortTrainEntriesByTime = (list: StationTrainEntry[]) =>
     return aTime - bTime;
   });
 
+const getEntryTimestamp = (entry: StationTrainEntry): number | null => {
+  const candidate =
+    entry.estimatedTime ??
+    entry.plannedTime ??
+    (entry.sortTimestamp !== Number.MAX_SAFE_INTEGER
+      ? new Date(entry.sortTimestamp)
+      : null);
+  if (!candidate) {
+    return null;
+  }
+  const ts = candidate.getTime();
+  return Number.isNaN(ts) ? null : ts;
+};
+
 const determineTrainDirection = (
   train: TrainPosition,
   stationSignature: string,
@@ -874,8 +888,27 @@ function StationPanelComponent({
     };
   }, [liveTrainGroups.arrivals, liveTrainGroups.departures, stationStopGroups]);
 
+  const filteredTrainGroups = useMemo(() => {
+    const minTs = now - PAST_GRACE_MINUTES * 60_000;
+    const maxTs = now + UPCOMING_WINDOW_MINUTES * 60_000;
+    const filterList = (list: StationTrainEntry[]) => {
+      const filtered = list.filter(entry => {
+        const ts = getEntryTimestamp(entry);
+        if (ts === null) {
+          return false;
+        }
+        return ts >= minTs && ts <= maxTs;
+      });
+      return sortTrainEntriesByTime([...filtered]);
+    };
+    return {
+      arrivals: filterList(displayedTrainGroups.arrivals ?? []),
+      departures: filterList(displayedTrainGroups.departures ?? []),
+    };
+  }, [displayedTrainGroups.arrivals, displayedTrainGroups.departures, now]);
+
   const activeList =
-    activeTab === 'departures' ? displayedTrainGroups.departures : displayedTrainGroups.arrivals;
+    activeTab === 'departures' ? filteredTrainGroups.departures : filteredTrainGroups.arrivals;
 
   useEffect(() => {
     if (!visible || !isStockholmC) {
@@ -885,8 +918,8 @@ function StationPanelComponent({
       station: station.signature,
       displayName,
       source: stationStopGroups ? 'api' : 'live',
-      arrivals: activeTab === 'arrivals' ? activeList : displayedTrainGroups.arrivals ?? [],
-      departures: activeTab === 'departures' ? activeList : displayedTrainGroups.departures ?? [],
+      arrivals: activeTab === 'arrivals' ? activeList : filteredTrainGroups.arrivals ?? [],
+      departures: activeTab === 'departures' ? activeList : filteredTrainGroups.departures ?? [],
       rawArrivals: trainGroups?.arrivals ?? [],
       rawDepartures: trainGroups?.departures ?? [],
       stationStops,
@@ -904,8 +937,58 @@ function StationPanelComponent({
     trainGroups,
     visible,
     activeTab,
-    displayedTrainGroups.arrivals,
-    displayedTrainGroups.departures,
+    filteredTrainGroups.arrivals,
+    filteredTrainGroups.departures,
+  ]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    const buildEntryLabel = (entry: StationTrainEntry) => {
+      const schedule = combinedTimetables[entry.id];
+      const { arrival, departure } = extractTimingFromStop(schedule);
+      const timing = entry.direction === 'arrivals' ? arrival : departure;
+      const mainTime =
+        timing?.actualLabel ??
+        timing?.plannedLabel ??
+        formatDisplayTime(entry.plannedTime ?? entry.estimatedTime ?? null);
+      const plannedTime = timing?.plannedLabel ?? formatDisplayTime(entry.plannedTime ?? null);
+      const dateLabel = formatDisplayDate(entry.plannedTime ?? entry.estimatedTime ?? null, now);
+      const parts = [
+        entry.direction === 'arrivals' ? 'Ank' : 'Avg',
+        mainTime,
+        plannedTime ? `(plan ${plannedTime})` : null,
+        dateLabel ? `[${dateLabel}]` : null,
+        entry.routeLabel,
+        entry.track ? `Spår ${entry.track}` : null,
+        entry.etaLabel ? `ETA ${entry.etaLabel}` : null,
+      ].filter(Boolean);
+      return parts.join(' · ');
+    };
+
+    const logList = (label: string, list: StationTrainEntry[]) => {
+      const lines = list.map(buildEntryLabel);
+      console.log('[StationPanel][Debug][Stoplist]', {
+        station: station.signature,
+        source: stationStopGroups ? 'api' : 'live',
+        list: label,
+        count: list.length,
+        entries: lines,
+      });
+    };
+
+    logList('arrivals', filteredTrainGroups.arrivals ?? []);
+    logList('departures', filteredTrainGroups.departures ?? []);
+  }, [
+    combinedTimetables,
+    filteredTrainGroups.arrivals,
+    filteredTrainGroups.departures,
+    now,
+    station.signature,
+    stationStopGroups,
+    visible,
   ]);
 
   useEffect(() => {

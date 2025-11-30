@@ -4,6 +4,9 @@ const { parseStringPromise } = require('xml2js');
 
 const PORT = process.env.PORT || 3001;
 const TRAFIKVERKET_ENDPOINT = 'https://api.trafikinfo.trafikverket.se/v2/data.xml';
+const STATION_LOOKAHEAD_HOURS = 48;
+const STATION_PAST_GRACE_MINUTES = 15;
+const STATION_QUERY_LIMIT = 400;
 
 const ensureArray = value => {
   if (Array.isArray(value)) {
@@ -69,13 +72,21 @@ const escapeXml = value =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-const buildRequestBody = (signature, apiKey) => `<?xml version="1.0" encoding="UTF-8"?>
+const buildRequestBody = (signature, apiKey) => {
+  const now = Date.now();
+  const windowStartIso = new Date(now - STATION_PAST_GRACE_MINUTES * 60 * 1000).toISOString();
+  const windowEndIso = new Date(now + STATION_LOOKAHEAD_HOURS * 60 * 60 * 1000).toISOString();
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <REQUEST>
   <LOGIN authenticationkey="${escapeXml(apiKey)}" />
-  <QUERY objecttype="TrainAnnouncement" schemaversion="1.9">
+  <QUERY objecttype="TrainAnnouncement" schemaversion="1.9" orderby="AdvertisedTimeAtLocation" limit="${STATION_QUERY_LIMIT}">
     <FILTER>
-      <EQ name="LocationSignature" value="${escapeXml(signature)}" />
-      <GT name="AdvertisedTimeAtLocation" value="NOW()" />
+      <AND>
+        <EQ name="LocationSignature" value="${escapeXml(signature)}" />
+        <GT name="AdvertisedTimeAtLocation" value="${escapeXml(windowStartIso)}" />
+        <LT name="AdvertisedTimeAtLocation" value="${escapeXml(windowEndIso)}" />
+      </AND>
     </FILTER>
 
     <INCLUDE>AdvertisedTrainIdent</INCLUDE>
